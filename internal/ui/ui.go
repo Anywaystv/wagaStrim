@@ -121,9 +121,12 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 	}
 
 	data := pageData{
-		Ingests:      s.cfg.Ingests,
-		SenderBase:   fmt.Sprintf("http://%s:%d/whip/", host, s.cfg.SignalPort),
-		ReceiverBase: fmt.Sprintf("http://%s:%d/whep/", host, s.cfg.SignalPort),
+		Ingests:    s.cfg.Ingests,
+		SenderBase: fmt.Sprintf("http://%s:%d/whip/", host, s.cfg.SignalPort),
+		// The Browser Source path is the default, so the receiver link is the
+		// player page rather than the raw WHEP endpoint. A WHEP client can still
+		// reach /whep/<same key> directly.
+		ReceiverBase: fmt.Sprintf("http://%s:%d/player/", host, s.cfg.SignalPort),
 	}
 
 	wri.Header().Set("content-type", "text/html; charset=utf-8")

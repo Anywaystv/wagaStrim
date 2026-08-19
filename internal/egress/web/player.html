@@ -1,0 +1,87 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>wagaStrim player</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden }
+  video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000 }
+  #msg {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: #8a8a8a; font: 14px/1.5 system-ui, sans-serif; text-align: center; padding: 1rem;
+  }
+  #msg[hidden] { display: none }
+</style>
+<video id="v" autoplay playsinline></video>
+<div id="msg">Connecting…</div>
+<script>
+  // The receiver key is in the path, so this page is the whole configuration.
+  const endpoint = location.pathname.replace("/player/", "/whep/");
+  const video = document.getElementById("v");
+  const msg = document.getElementById("msg");
+
+  const say = (text) => {
+    msg.textContent = text;
+    msg.hidden = false;
+  };
+
+  let resource = null;
+  let retry = 1000;
+
+  async function connect() {
+    const peer = new RTCPeerConnection();
+
+    peer.addTransceiver("video", { direction: "recvonly" });
+    peer.addTransceiver("audio", { direction: "recvonly" });
+
+    peer.ontrack = (ev) => {
+      video.srcObject = ev.streams[0];
+      msg.hidden = true;
+      retry = 1000;
+    };
+
+    peer.onconnectionstatechange = () => {
+      if (peer.connectionState === "failed" || peer.connectionState === "disconnected") {
+        peer.close();
+        say("Reconnecting…");
+        setTimeout(connect, retry);
+        retry = Math.min(retry * 2, 15000);
+      }
+    };
+
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    await new Promise((done) => {
+      if (peer.iceGatheringState === "complete") return done();
+      peer.onicegatheringstatechange = () =>
+        peer.iceGatheringState === "complete" && done();
+    });
+
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/sdp" },
+      body: peer.localDescription.sdp,
+    });
+
+    if (!res.ok) {
+      peer.close();
+      say(await res.text());
+      setTimeout(connect, retry);
+      retry = Math.min(retry * 2, 15000);
+      return;
+    }
+
+    resource = res.headers.get("location");
+    await peer.setRemoteDescription({ type: "answer", sdp: await res.text() });
+
+    // OBS sets autoplay-policy=no-user-gesture-required, so unmuted playback
+    // starts on its own there. An ordinary browser will refuse; say so rather
+    // than showing a black rectangle.
+    video.play().catch(() => say("Click to start audio"));
+    document.body.onclick = () => video.play().catch(() => {});
+  }
+
+  addEventListener("pagehide", () => {
+    if (resource) navigator.sendBeacon(resource, new Blob([], { type: "text/plain" }));
+  });
+
+  connect().catch((err) => say(String(err)));
+</script>
