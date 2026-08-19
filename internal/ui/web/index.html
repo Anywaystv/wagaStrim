@@ -52,7 +52,7 @@
     <p class="muted" data-stats>Waiting for a publisher.</p>
 
     <div class="field">
-      <span class="field-label" id="send-{{.ID}}">Sender — paste into Moblin</span>
+      <span class="field-label" id="send-{{.ID}}">Sender link, for Moblin</span>
       <div class="row">
         <div class="secret masked" role="group" aria-labelledby="send-{{.ID}}"
              data-destination="Moblin" data-secret="{{$.SenderBase}}{{.SenderKey}}">••••••••••••••••</div>
@@ -62,7 +62,7 @@
     </div>
 
     <div class="field">
-      <span class="field-label" id="recv-{{.ID}}">Receiver — add a Browser Source in OBS and paste this as the URL</span>
+      <span class="field-label" id="recv-{{.ID}}">Receiver link. Add a Browser Source in OBS and paste this as the URL</span>
       <div class="row">
         <div class="secret masked" role="group" aria-labelledby="recv-{{.ID}}"
              data-destination="OBS" data-secret="{{$.ReceiverBase}}{{.ReceiverKey}}">••••••••••••••••</div>
@@ -73,7 +73,7 @@
 
     <div class="field">
       <label for="delay-{{.ID}}">
-        Delay <output data-delay-out>{{.DelayMS}}</output> ms — minimum 2000
+        Delay <output data-delay-out>{{.DelayMS}}</output> ms. Minimum 2000
         {{if ne .Effective .DelayMS}}
           <span class="pill">playing out at {{.Effective}} ms for group {{.SyncGroup}}</span>
         {{end}}
@@ -98,7 +98,7 @@
     </fieldset>
 
     <div class="field">
-      <label for="group-{{.ID}}">Sync group — cameras sharing a name play out together</label>
+      <label for="group-{{.ID}}">Sync group. Cameras sharing a name play out together</label>
       <div class="row">
         <input type="text" id="group-{{.ID}}" value="{{.SyncGroup}}" maxlength="32"
                placeholder="none" data-group="{{.ID}}">

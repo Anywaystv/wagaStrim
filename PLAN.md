@@ -1,10 +1,10 @@
-# wagaStrim — plan
+# wagaStrim plan
 
 A single Go binary that runs on a streamer's PC 24/7, accepts a WebRTC (WHIP) ingest from a
 phone, and hands OBS a link to pull it back out as a Browser Source. Two links per camera, one
 delay slider, one stats row. Nothing else.
 
-Pion is the only media dependency. No RTSP, no SRT, no RTMP, no transcoding, no OBS plugin — the
+Pion is the only media dependency. No RTSP, no SRT, no RTMP, no transcoding, no OBS plugin. The
 reasoning for each rejection is in "Getting it into OBS" so it does not get relitigated.
 
 The audience is IRL streamers who cannot set up an ingest. The whole product is: install, open
@@ -23,11 +23,11 @@ must not be silently designed around later.
 | Moblin bonds over WHIP | **No.** Moblin bonds on SRTLA and RIST only. Its WHIP client opens one PeerConnection over the default route. | github.com/eerimoq/moblin README |
 | iPhone can send AV1 | **No.** No AV1 hardware encoder on any iPhone. Moblin encodes H.264/AVC or H.265/HEVC. | Moblin README |
 | Pion can carry H.265 and AV1 | **Yes.** H.265 payloader plus `h265reader`/`h265writer` landed in v4.1.0; AV1 stable since v4.1.0. | pion/webrtc v4.1.0, v4.2.0 releases |
-| Pion FlexFEC helps our ingest | **Only if the sender emits it.** Moblin does not. `pion/interceptor/pkg/flexfec` ships `encoder_interceptor.go` but no matching decoder interceptor — `flexfec_decoder_03.go` is a bare primitive. | pion/interceptor tree |
-| OBS Media Source can pull WebRTC via FFmpeg options | **No.** Mainline FFmpeg has `libavformat/whip.c` (WHIP muxer, output) but no `webrtc_demux.c` — the WHEP demuxer from the same patch series never merged. No Input Format or option string reaches code that is not compiled in. | HTTP 200 vs 404 on `FFmpeg/FFmpeg/master/libavformat/*` |
+| Pion FlexFEC helps our ingest | **Only if the sender emits it.** Moblin does not. `pion/interceptor/pkg/flexfec` ships `encoder_interceptor.go` but no matching decoder interceptor, and `flexfec_decoder_03.go` is a bare primitive. | pion/interceptor tree |
+| OBS Media Source can pull WebRTC via FFmpeg options | **No.** Mainline FFmpeg has `libavformat/whip.c` (WHIP muxer, output) but no `webrtc_demux.c`, and the WHEP demuxer from the same patch series never merged. No Input Format or option string reaches code that is not compiled in. | HTTP 200 vs 404 on `FFmpeg/FFmpeg/master/libavformat/*` |
 | Browser Source can decode HEVC | **Gated, not blocked.** Chromium defaults HEVC WebRTC receive on from M136 and has had it behind `WebRtcAllowH265Receive` since M126. OBS's CEF fork tops out at branch 6533 = Chromium 133: inside the flag window, below default-on. Untested whether OBS forwards the flag. | `obsproject/cef` branches; Chromium flag history |
 | Pion has a current OBS project | **No.** One exists across all 63 pion repos, `pion/obs-wormhole`, archived Jan 2024. Its "WebRTC is in OBS now" note refers to WHIP *output* in OBS 30.0, not WHEP input. | pion org listing; obs-wormhole README |
-| Pion exposes renomination | **Yes.** `SettingEngine.SetICERenomination(...RenominationOption)`, with `WithRenominationGenerator`, `WithRenominationInterval`, `WithRenominationNominationAttribute`. | pion/webrtc v4.2.0 |
+| Pion exposes renomination | **Yes.** `SettingEngine.SetICERenomination`, with `WithRenominationGenerator`, `WithRenominationInterval`, `WithRenominationNominationAttribute`. | pion/webrtc v4.2.0 |
 
 ## Bonding
 
@@ -144,14 +144,14 @@ it, not to split it reflexively.
 
 **Codec choice** restricts what the WHIP answer negotiates. H.264, H.265, and AV1 are registered
 on the MediaEngine; the toggles decide which get offered. There is no transcoding anywhere in the
-pipeline — the phone encodes, we forward bytes.
+pipeline: the phone encodes, we forward bytes.
 
 A codec has to clear both ends, and the two ends fail differently:
 
 | Codec | Sender | Receiver (Browser Source) |
 | --- | --- | --- |
 | H.264 | Every phone | Always works |
-| H.265 | Moblin's other option, and the one people pick on constrained cellular | Gated on the CEF flag — see "Getting it into OBS" |
+| H.265 | Moblin's other option, and the one people pick on constrained cellular | Gated on the CEF flag, see "Getting it into OBS" |
 | AV1 | **No iPhone can encode it.** Desktop and OBS-WHIP senders only | Works |
 
 So AV1 is selectable but an iPhone will never pick it, and H.265 may negotiate fine and still
@@ -163,7 +163,7 @@ maximum 10000. The slider does not go below the floor and the config file is cla
 trusted.
 
 The floor is the whole point of the product, not a tuning preference. A phone on cellular loses
-the link for a second or two constantly — a lift, an underpass, a tower handoff. With two seconds
+the link for a second or two constantly, whether a lift, an underpass, or a tower handoff. With two seconds
 already buffered, OBS keeps being fed the entire time and the viewer sees nothing. Without it the
 stream freezes on every dropout. A streamer who drags the slider to zero chasing latency has
 turned off the reason they installed this.
@@ -173,13 +173,13 @@ are not:
 
 | Interceptor | Default | Covers at 8 Mbps (~833 pkt/s) |
 | --- | --- | --- |
-| `nack.GeneratorSize` — we NACK the phone | 512 | ~0.6 s |
-| `nack.ResponderSize` — OBS NACKs us | 1024 | ~1.2 s |
+| `nack.GeneratorSize`, we NACK the phone | 512 | ~0.6 s |
+| `nack.ResponderSize`, OBS NACKs us | 1024 | ~1.2 s |
 
 Set both to 4096, which covers two seconds up to roughly 20 Mbps. Sizes are restricted to powers
 of two; 4096 is a legal value for each. `ResponderSize` holds real packets, so budget about 5 MB
 per stream; `GeneratorSize` is a bitmap and costs nothing. Leave `GeneratorInterval` at its 100 ms
-default — that is twenty retry rounds inside the window.
+default, which is twenty retry rounds inside the window.
 
 **What the buffer actually buys, corrected.** An earlier draft said absorbing an outage works for
 the full two seconds unconditionally "because it is just held bytes". That is wrong, and the
@@ -198,14 +198,14 @@ Recovery depth is additionally capped by how far back Moblin retains packets for
 which is its choice and not ours. Measure it against a real phone before claiming a number.
 
 **Drift correction.** When buffered duration exceeds target plus 2000 ms, drain by dropping to the
-next keyframe and firing a PLI, rather than playing faster — a pass-through relay cannot resample
+next keyframe and firing a PLI, rather than playing faster. A pass-through relay cannot resample
 video, and speeding up audio pitches it. One clean skip beats sustained distortion. The hysteresis
 is deliberately wide so a link recovering from a dropout refills the buffer instead of triggering
 a skip. Below target, hold and refill; never drain below the floor. Log every correction, and if a
-stream corrects repeatedly, say so in the UI — that means the target is too low for that
+stream corrects repeatedly, say so in the UI, because it means the target is too low for that
 connection.
 
-**Loss handling on ingest** is NACK and RTX plus the buffer above. Not FEC — Moblin will not send
+**Loss handling on ingest** is NACK and RTX plus the buffer above. Not FEC, because Moblin will not send
 FlexFEC, so there is nothing to decode. Revisit only if we ship our own sender.
 
 **Renomination** is on, so a phone moving between Wi-Fi and cellular re-homes without a
@@ -215,7 +215,7 @@ reconnect. Enabled via `SettingEngine.SetICERenomination`; note it acts on the c
 
 **Two keys per ingest, never one.** Each ingest issues a separate sender key and receiver key,
 both 32 hex from `crypto/rand`. This is not only about typos. With a single shared key, anyone
-handed the OBS receiver link could also publish to the ingest — so a co-host given a feed to pull
+handed the OBS receiver link could also publish to the ingest, so a co-host given a feed to pull
 could overwrite the broadcast. Separate keys make the receiver link safe to hand out and let
 either side be revoked without disturbing the other, so a leaked OBS link is rotated mid-stream
 without knocking the phone offline.
@@ -230,8 +230,8 @@ The key role is the mechanism:
 
 | Presented | At | Response |
 | --- | --- | --- |
-| `r_…` | `/whip/` | 400, "This is the receiver link, which belongs in OBS. Moblin needs the sender link." |
-| `s_…` | `/whep/` | 400, "This is the sender link, which belongs in Moblin. OBS needs the receiver link." |
+| `r_...` | `/whip/` | 400, "This is the receiver link, which belongs in OBS. Moblin needs the sender link." |
+| `s_...` | `/whep/` | 400, "This is the sender link, which belongs in Moblin. OBS needs the receiver link." |
 | Unknown | either | 404, generic. No hint about which ingest exists. |
 
 The helpful message is only ever returned to someone already holding a valid key for that ingest,
@@ -255,7 +255,7 @@ outgrows a hosted service. Each ingest is an independent stream with its own pai
 own buffer, and its own stats row, appearing in OBS as its own source.
 
 An ingest is a label, a sender key, a receiver key, a codec set, and a delay target. The label
-matters more than it sounds — eight unlabelled links that differ only by a hex string is how
+matters more than it sounds. Eight unlabelled links that differ only by a hex string is how
 someone ends up pointing their drone at their chest cam's scene.
 
 **They all share the one UDP media port.** This is the load-bearing decision. Sessions are
@@ -266,7 +266,7 @@ setup story rests on.
 
 **Sync groups.** Two cameras live on screen together will drift, because each has its own network
 path and its own buffer. An ingest can join a named sync group, and every member of a group plays
-out at the same target — the maximum of what its members need, so the worst path sets the pace for
+out at the same target, the maximum of what its members need, so the worst path sets the pace for
 all of them. Ingests are ungrouped by default: a chest cam and a drone that are only ever cut
 between, never composited, should not be penalised by each other.
 
@@ -295,8 +295,8 @@ Every alternative was priced and rejected:
 
 | Rejected | Why |
 | --- | --- |
-| FFmpeg options in Media Source | Impossible. Mainline FFmpeg has `libavformat/whip.c` but no `webrtc_demux.c` — the WHEP demuxer from that patch series never merged. No option string reaches code that is not compiled in. |
-| RTSP via `gortsplib` | Works, and costs no media conversion, but buys only HEVC — and buys it by routing around a version lag that fixes itself. One dependency to dodge a temporary gap is the kind of thing you regret. |
+| FFmpeg options in Media Source | Impossible. Mainline FFmpeg has `libavformat/whip.c` but no `webrtc_demux.c`, and the WHEP demuxer from that patch series never merged. No option string reaches code that is not compiled in. |
+| RTSP via `gortsplib` | Works, and costs no media conversion, but buys only HEVC, and buys it by routing around a version lag that fixes itself. One dependency to dodge a temporary gap is the kind of thing you regret. |
 | SRT via `gosrt` | Full remux: depacketise, MPEG-TS mux, plus a muxer `pion/format/mpegts` does not have (it has `reader.go`, no writer). |
 | RTMP / FLV | Worst of all. Forces an Opus→AAC transcode, which means cgo or an ffmpeg subprocess, which kills the static Linux build. H.264 only in practice. |
 | Our own OBS plugin | C++, libobs, libdatachannel, three more platform targets. See below. |
@@ -305,7 +305,7 @@ Every alternative was priced and rejected:
 **HEVC is a version lag, not a limitation.** This is the one thing to get right, because the
 earlier plan stated it wrongly. Chromium enables HEVC receive over WebRTC by default from **Chrome
 136**, and has had it behind `WebRtcAllowH265Receive` / `WebRtcAllowH265Send` since **M126**. OBS's
-CEF fork tops out at branch **6533**, which is Chromium **133** — three releases below default-on,
+CEF fork tops out at branch **6533**, which is Chromium **133**: three releases below default-on,
 but inside the flag-gated window.
 
 So HEVC into a Browser Source is not blocked, it is gated on whether OBS forwards CEF command-line
@@ -325,13 +325,13 @@ people get wrong.
 
 **Accept the key in the path or as a bearer token.** Our player page carries it in the path;
 `Authorization: Bearer` is what the WHEP spec says and what any third-party client will send.
-`/whep/r_…` and `/whep/` with the key in the header resolve identically. A few lines, and it keeps
+`/whep/r_...` and `/whep/` with the key in the header resolve identically. A few lines, and it keeps
 the door open for clients we do not control without us depending on any of them.
 
 ### We are not writing an OBS plugin
 
 Settled, so it does not get reopened. There is no Pion-based OBS plugin and there should not be
-one. OBS plugins are C or C++ shared libraries against libobs — both the core `obs-webrtc` plugin
+one. OBS plugins are C or C++ shared libraries against libobs, and both the core `obs-webrtc` plugin
 that provides WHIP output and the third-party `OBS-WebRTC-Link` that provides WHEP input are C++
 built on libdatachannel. Reaching Pion from there means `-buildmode=c-shared`, which puts an
 entire Go runtime and garbage collector inside the OBS process with no clean unload when OBS
@@ -350,7 +350,7 @@ per subscriber. Everything below was compile-checked against `pion/webrtc v4.2.1
 
 **Never parse the payload.** This is a relay: bytes in, same bytes out. Read the RTP header, look
 at nothing else. The one exception is keyframe detection for drift correction, which needs a few
-bytes at the front of the video payload — keep that in one small codec-switch function and let it
+bytes at the front of the video payload. Keep that in one small codec-switch function and let it
 be the only place that knows what a NAL unit is.
 
 **Size the kernel socket buffers, then check they took.** The default UDP receive buffer drops
@@ -398,8 +398,8 @@ receiver does not double the cost.
 running, no poll loops, no stats recomputation. A tray app that burns 2% of a core forever is a
 tray app people uninstall. Assert this in the soak test.
 
-**Set `GOMEMLIMIT`** to a real ceiling. The steady-state working set is small and knowable — a 2
-second buffer plus a 4096-packet RTX buffer is roughly 10 MB per stream — so a soft limit turns a
+**Set `GOMEMLIMIT`** to a real ceiling. The steady-state working set is small and knowable, since a 2
+second buffer plus a 4096-packet RTX buffer is roughly 10 MB per stream, so a soft limit turns a
 leak into visible GC pressure instead of a machine slowly swapping at 4am.
 
 Do not micro-optimise on instinct. Every change in this section needs a `go test -bench` or a
@@ -413,7 +413,7 @@ done until all three run.
 
 **Automated, in `go test`.** A synthetic WHIP sender built on Pion pushes a fixture file into the
 server; a synthetic WHEP receiver pulls it and asserts every sequence number arrived. This is also
-where the multi-path sender lives — the one that sprays the same SRTP across several local
+where the multi-path sender lives, the one that sprays the same SRTP across several local
 candidates and proves the bonded receive path merges and dedupes. No phone required, runs in CI.
 
 **Impairment tests on a real machine.** Wrap the automated harness in deliberate network damage
@@ -423,7 +423,7 @@ and assert behaviour, not just absence of crashes:
 | --- | --- |
 | 2% random loss | Recovered by NACK, no visible artifact |
 | 400 ms jitter | Absorbed by the buffer, output cadence steady |
-| Hard 2 s cut | Output never stalls — this is the floor doing its job |
+| Hard 2 s cut | Output never stalls, which is the floor doing its job |
 | Hard 5 s cut | Stalls, then recovers to target without a permanent offset |
 | One path of three killed | Others carry it, per-path stats show the dead one |
 
@@ -443,7 +443,7 @@ count, and open file descriptors. Flat lines or it does not ship. Idle CPU check
 ## Launch on start
 
 A checkbox in settings, off by default, that registers the binary with whatever the platform
-already uses. No custom daemon, no elevated privileges, nothing installed system-wide — all three
+already uses. No custom daemon, no elevated privileges, nothing installed system-wide. All three
 mechanisms are user-scoped and reversible by unticking the box.
 
 | Platform | Mechanism |
@@ -452,7 +452,7 @@ mechanisms are user-scoped and reversible by unticking the box.
 | Linux | A systemd user unit at `~/.config/systemd/user/wagastrim.service`. Headless boxes also need `loginctl enable-linger`, which the UI must say plainly rather than silently failing to start at boot. |
 | macOS | A LaunchAgent plist in `~/Library/LaunchAgents`, loaded with `launchctl bootstrap gui/$UID`. |
 
-Write the toggle so unticking removes the artifact completely — no orphaned unit file, no dead
+Write the toggle so unticking removes the artifact completely, leaving no orphaned unit file and no dead
 registry value pointing at a binary that moved. Verify the round trip in the soak checklist, and
 verify it survives the binary being moved or upgraded.
 
@@ -463,7 +463,7 @@ router is arguably the *better* deployment for a 24/7 ingest than the streaming 
 
 Build matrix: `linux/amd64`, `linux/arm64`, `windows/amd64`, `darwin/arm64`.
 
-**The tray is the only platform-specific part, and macOS is where cgo enters — not Linux.** An
+**The tray is the only platform-specific part, and macOS is where cgo enters, not Linux.** An
 earlier draft of this plan said the Linux tray needs cgo. Measured, it does not: `fyne.io/systray`
 talks StatusNotifierItem over `godbus/dbus`, which is pure Go, so `linux/amd64` builds with the
 tray at `CGO_ENABLED=0`. macOS is the one that genuinely requires cgo.
@@ -474,9 +474,9 @@ Verified build matrix:
 | --- | --- | --- | --- |
 | linux/amd64 | 0 | `notray` | builds |
 | linux/arm64 | 0 | `notray` | builds |
-| linux/amd64 | 0 | — | builds, tray included |
-| windows/amd64 | 0 | — | builds |
-| darwin/arm64 | **1** | — | builds; fails at cgo=0 |
+| linux/amd64 | 0 |  | builds, tray included |
+| windows/amd64 | 0 |  | builds |
+| darwin/arm64 | **1** |  | builds; fails at cgo=0 |
 
 - Keep every package except `internal/tray` free of cgo and of build tags.
 - Keep the `notray` tag and `--headless` anyway. GNOME still needs a shell extension for the icon
@@ -493,18 +493,18 @@ buffer sysctl differs per platform and is handled by reading the value back, as 
 
 ## Phases
 
-1. Skeleton — binary, config, tray, UI shell, health endpoint. No media.
-2. WHIP ingest — one session, H.264 only, prove Moblin connects.
+1. Skeleton: binary, config, tray, UI shell, health endpoint. No media.
+2. WHIP ingest: one session, H.264 only, prove Moblin connects.
 3. WHEP egress plus the Browser Source player page, prove OBS pulls it.
 4. Delay buffer with the 2000 ms floor, deepened NACK history, and drift correction.
 5. Stats and the reachability check.
 6. H.265 and AV1 negotiation, codec toggles, per-codec receiver guidance in the UI.
-7. Multiple ingests — registry, per-ingest links and stats, add and delete, sync groups.
+7. Multiple ingests: registry, per-ingest links and stats, add and delete, sync groups.
 8. Renomination and interface reporting.
-9. Bonding receive path — replay window sizing, candidate pair reporting, and an honest account
+9. Bonding receive path: replay window sizing, candidate pair reporting, and an honest account
    of what cannot be measured.
 10. Autostart on all three platforms, including clean removal.
-11. Performance pass — buffer pooling, socket sizing, pprof, benchmarks in the PR.
+11. Performance pass: buffer pooling, socket sizing, pprof, benchmarks in the PR.
 12. Soak and impairment runs, then real hardware with a phone outdoors.
 
 Each phase is one PR and must be runnable at its end.
@@ -517,7 +517,7 @@ The one unresolved question that changes what ships:
   Chromium 133, inside the flag-gated window for HEVC over WebRTC but below the M136 default-on
   cutoff. If the flag reaches it, H.265 is a real codec option. If not, the toggle offers H.264
   and AV1 only until OBS bumps CEF. Cheap to test, gates phase 6, and it is the reason no media
-  dependency was added — see "Getting it into OBS".
+  dependency was added. See "Getting it into OBS".
 
 Settled, recorded so it is not rediscovered:
 

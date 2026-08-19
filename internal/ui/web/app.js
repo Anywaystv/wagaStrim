@@ -127,7 +127,7 @@ async function poll() {
     if (snap.late) parts.push(`${snap.late} late`);
     if (snap.dropped) parts.push(`${snap.dropped} dropped`);
 
-    line.textContent = parts.join("  ·  ") + (snap.advice ? "  —  " + snap.advice : "");
+    line.textContent = parts.join(", ") + (snap.advice ? ". " + snap.advice : "");
   }
 
   // Aggregate, because what limits a multi-camera setup is the total, not any
@@ -135,7 +135,7 @@ async function poll() {
   const live = Object.values(all).filter((s) => s.live);
   const total = live.reduce((sum, s) => sum + s.bitrateKbps, 0);
   document.getElementById("total").textContent = live.length
-    ? `${live.length} streaming  ·  ${(total / 1000).toFixed(1)} Mbps total`
+    ? `${live.length} streaming, ${(total / 1000).toFixed(1)} Mbps total`
     : "No cameras streaming.";
 }
 
@@ -144,7 +144,7 @@ poll().catch(() => {});
 
 document.getElementById("check").addEventListener("click", async (ev) => {
   const out = document.getElementById("reach");
-  out.textContent = "Checking…";
+  out.textContent = "Checking";
 
   try {
     const res = await fetch("/api/reachability");

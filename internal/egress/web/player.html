@@ -13,7 +13,7 @@
   #msg[hidden] { display: none }
 </style>
 <video id="v" autoplay playsinline></video>
-<div id="msg">Connecting…</div>
+<div id="msg">Connecting</div>
 <script>
   // The receiver key is in the path, so this page is the whole configuration.
   const endpoint = location.pathname.replace("/player/", "/whep/");
@@ -43,7 +43,7 @@
     peer.onconnectionstatechange = () => {
       if (peer.connectionState === "failed" || peer.connectionState === "disconnected") {
         peer.close();
-        say("Reconnecting…");
+        say("Reconnecting");
         setTimeout(connect, retry);
         retry = Math.min(retry * 2, 15000);
       }

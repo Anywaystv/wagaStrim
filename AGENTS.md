@@ -46,8 +46,8 @@ afternoon. Every addition spends that budget.
 - No framework in `web/`. Plain HTML, one CSS file, one JS file with event listeners.
 - No configuration for something with one sane value. A setting is a support burden forever.
 - Ingests are addressed by stream key on the shared UDP media port. Never allocate a port per
-  ingest — that turns "forward two ports" into "forward one per camera" and breaks the setup story
-  the product is built around.
+  ingest. That turns "forward two ports" into "forward one per camera", which breaks the setup
+  story the product is built around.
 - The 2000 ms delay floor is not a default, it is a floor. Do not add a flag, an "advanced" toggle,
   or an env var that lets someone go below it. Clamp on config load rather than trusting the file.
 - No abstraction with one implementation. No interface until there are two callers. The one
@@ -62,8 +62,8 @@ afternoon. Every addition spends that budget.
 
 The Go here should read like it came out of the `pion/webrtc` repository. Someone who reviews Pion
 should be able to review this without adjusting. `.golangci.yml` is Pion's own config copied
-verbatim — only the SPDX header differs — so the linter enforces most of this. Run it and believe
-it; do not add `//nolint` to get past a rule Pion lives with.
+verbatim, with only the SPDX header changed, so the linter enforces most of this. Run it and
+believe it. Do not add `//nolint` to get past a rule Pion lives with.
 
 The rules that bite hardest, because they are not what an LLM writes by default:
 
@@ -92,7 +92,7 @@ The rules that bite hardest, because they are not what an LLM writes by default:
   the right trade for this project.
 - **`dupl` is on.** Two near-identical blocks fail the build, which is the honest pressure to
   factor rather than paste.
-- **Tests use `testify/assert`,** not `t.Error`/`t.Fatal` — `forbidigo` blocks those with that
+- **Tests use `testify/assert`,** not `t.Error`/`t.Fatal`. `forbidigo` blocks those with that
   exact message. This is the one dependency exempt from the justify-it rule above.
 - **Formatting is `gci`, `gofmt`, `gofumpt`, `goimports`.** `gofumpt` is stricter than `gofmt`;
   run all four.
@@ -118,6 +118,11 @@ Output that reads as machine-generated gets rejected regardless of whether it wo
 - No banned filler in comments, docs, commits, or PR text: "robust", "seamless", "comprehensive",
   "leverage", "delve", "it's worth noting", "in today's fast-paced".
 - No emoji in code, commits, or PR bodies. The UI has one status dot; that is the visual budget.
+- Plain punctuation everywhere a person reads: comments, docs, commit messages, UI strings and log
+  lines. No em dashes, en dashes, curly quotes or ellipsis characters. Use a comma, a colon, a full
+  stop or a second sentence, whichever the grammar actually calls for. Rewriting the sentence is
+  the point; swapping the character for a hyphen and leaving the same clause structure produces
+  the same overlong sentence with worse punctuation.
 - No section headers with nothing under them. No tables with one row. No bullet list where a
   sentence works.
 - No summary paragraph restating what the diff already says.
@@ -128,7 +133,7 @@ Output that reads as machine-generated gets rejected regardless of whether it wo
 - Do not claim a feature exists before it does. Specifically: the bonded receive path works, but
   nothing in the UI or README says "bonded" until a sender exists that actually sprays over
   multiple candidates. Until then the word is failover.
-- No speculative generality — no config knob, hook, or extension point added "for later".
+- No speculative generality. No config knob, hook, or extension point added "for later".
 - Run `/slop-check` on the diff before opening a PR.
 
 ## Review before push
@@ -154,7 +159,7 @@ later by someone who cannot tell why the code is shaped that way.
 ## Commits and PRs
 
 There is no GitHub remote yet and there will not be one until the project is done. Everything
-below still applies to local history — a messy local log becomes a messy public log the moment the
+below still applies to local history. A messy local log becomes a messy public log the moment the
 repo is created, and nobody rewrites it at that point.
 
 We are deliberately slow. Repository noise is the failure mode here, not slow delivery.
@@ -180,7 +185,7 @@ We are deliberately slow. Repository noise is the failure mode here, not slow de
 The repository is going public. It must look like it was written by a person.
 
 - `.gitignore` carries `CLAUDE.md`, `.claude/`, `.serena/`, and `*.local.md`. It is already in
-  place, so nothing assistant-related ever enters history in the first place — this is far easier
+  place, so nothing assistant-related ever enters history in the first place, which is far easier
   than scrubbing it later. Verify at repo creation and again before flipping public.
 - No `Co-Authored-By: Claude` trailers, no "Generated with Claude Code" footers, no assistant
   attribution anywhere in commits, PRs, issues, or code comments.
@@ -207,13 +212,13 @@ Reuse the design language from `Anyways-BotGateway` rather than inventing one.
 - Keys are 32 hex characters from `crypto/rand`, comparable only with
   `crypto/subtle.ConstantTimeCompare`, and regenerable from the UI.
 - Sender and receiver keys are separate, always. Never collapse them back into one shared key for
-  an ingest, however convenient it looks — the receiver link is meant to be handed to other people,
+  an ingest, however convenient it looks. The receiver link is meant to be handed to other people,
   and a shared key would let anyone holding it publish over the broadcast.
 - An error message may only be more specific than "not found" for a caller already holding a valid
   key for that ingest. Everything else gets a generic 404, so nothing becomes an oracle for which
   ingests exist.
 - Bind loopback by default. Exposing to LAN or the internet is an explicit opt-in that shows what
   it means in plain words first.
-- Never log a stream key, a full ingest link, or a TURN credential — not at debug level either.
+- Never log a stream key, a full ingest link, or a TURN credential, not even at debug level.
 - Config file written `0600` through a temp file and rename.
 - Dependency updates land in their own PR, never folded into a feature.
