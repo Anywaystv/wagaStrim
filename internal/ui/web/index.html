@@ -18,6 +18,17 @@
     <p class="muted" id="reach" role="status" aria-live="polite">Not checked yet.</p>
   </section>
 
+  <section class="card">
+    <div class="row between">
+      <h2>Start at login</h2>
+      <label class="row">
+        <input type="checkbox" id="autostart">
+        <span>Run when this machine starts</span>
+      </label>
+    </div>
+    <p class="muted" id="autostart-note" role="status" aria-live="polite"></p>
+  </section>
+
   {{if not .Ingests}}
     <div class="card empty">No cameras yet. Add one to get a link pair.</div>
   {{end}}

@@ -89,6 +89,17 @@ func (c *Config) SetPublicHost(host string) error {
 	return c.saveLocked()
 }
 
+// SetAutostart records the toggle. The platform is the authority on whether the
+// entry exists; this is only what the page shows before it asks.
+func (c *Config) SetAutostart(on bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.Autostart = on
+
+	return c.saveLocked()
+}
+
 // Host returns the public address, or an empty string if none is known yet.
 func (c *Config) Host() string {
 	c.mu.RLock()

@@ -158,3 +158,35 @@ document.getElementById("check").addEventListener("click", async (ev) => {
     ev.target.textContent = "Retry";
   }
 });
+
+// Autostart state comes from the platform, not from the config file, so the tick
+// cannot claim an entry that was removed outside this app.
+const autostartBox = document.getElementById("autostart");
+const autostartNote = document.getElementById("autostart-note");
+
+function showAutostart(state) {
+  autostartBox.checked = state.on;
+
+  const parts = [];
+  if (state.stale) {
+    parts.push(
+      "The login entry points at a different file, which happens after moving or " +
+      "upgrading the binary. Untick and tick again to repair it."
+    );
+  }
+  if (state.note) parts.push(state.note);
+
+  autostartNote.textContent = parts.join(" ");
+}
+
+fetch("/api/autostart").then((r) => r.json()).then(showAutostart).catch(() => {});
+
+autostartBox.addEventListener("change", () => {
+  post("/api/autostart", { on: autostartBox.checked })
+    .then((r) => r.json())
+    .then(showAutostart)
+    .catch(() => {
+      autostartBox.checked = !autostartBox.checked;
+      autostartNote.textContent = "Could not change the login entry.";
+    });
+});
