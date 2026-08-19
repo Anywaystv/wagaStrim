@@ -425,7 +425,7 @@ and assert behaviour, not just absence of crashes:
 | 400 ms jitter | Absorbed by the buffer, output cadence steady |
 | Hard 2 s cut | Output never stalls, which is the floor doing its job |
 | Hard 5 s cut | Stalls, then recovers to target without a permanent offset |
-| One path of three killed | Others carry it, per-path stats show the dead one |
+| One path of three killed | Others carry it, and the usable pair count drops |
 
 Linux uses `tc qdisc netem`, macOS uses `dnctl` with `pfctl`. Script both in `scripts/impair.sh`
 so the numbers are reproducible instead of anecdotal.
