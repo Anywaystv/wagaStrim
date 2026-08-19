@@ -14,7 +14,10 @@ that works and is boring.
 The reason to choose this over BELABOX or a cloud ingest is that it is small enough to read in an
 afternoon. Every addition spends that budget.
 
-- Target under 2000 lines of Go. Report the count in any PR that moves it more than 200 lines.
+- Keep it small enough to read in an afternoon. The working number is 3500 lines of Go, revised
+  upward from 2000 once the buffer and the two signaling paths were real code rather than an
+  estimate. Report the count in any PR that moves it more than 200 lines, and say so plainly if a
+  phase pushes past the number instead of quietly redefining it again.
 - Pion, a tray library, and `testify` in tests are the entire dependency budget. It has already
   been spent. Adding a fourth needs a line in the PR saying what it replaced and why writing it
   ourselves was worse.
@@ -137,8 +140,11 @@ repo is created, and nobody rewrites it at that point.
 
 We are deliberately slow. Repository noise is the failure mode here, not slow delivery.
 
-- **Five commits per day, maximum.** If the sixth seems necessary, squash instead. The cap lifts
-  only when Marc says push.
+- **The daily cap is lifted while working through the phases in `PLAN.md`.** One commit per phase
+  is still the shape; that is what keeps history readable. It is not licence to commit per file or
+  per fix. Corrections to a phase still on its own unpushed branch get amended into it rather than
+  stacked, since nobody has pulled it.
+- Outside phase work, five commits per day maximum. If the sixth seems necessary, squash instead.
 - One branch per phase from `PLAN.md`, and it only merges once that phase actually runs. These
   become the PRs retroactively if the history is worth preserving at repo creation.
 - No commit that only touches formatting, comments, or docs unless that is the entire point of the

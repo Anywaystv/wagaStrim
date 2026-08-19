@@ -122,8 +122,9 @@ scripts/impair.sh          netem / dnctl impairment for the test matrix
 internal/ui/web/           embedded page, one HTML, one CSS, one JS, no framework
 ```
 
-Target: under 2000 lines of Go. If a package crosses 300 lines, that is a signal to re-read it,
-not to split it reflexively.
+Target: under 3500 lines of Go, revised up from 2000 once the buffer and both signaling paths
+were written rather than estimated. If a package crosses 300 lines, that is a signal to re-read
+it, not to split it reflexively.
 
 ## Behaviour
 
