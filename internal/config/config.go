@@ -6,6 +6,7 @@
 package config
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -231,4 +232,42 @@ func (c *Config) SetDelay(id string, delayMS int) error {
 	}
 
 	return fmt.Errorf("%w: %s", ErrUnknownIngest, id)
+}
+
+// Role says which half of an ingest a key belongs to.
+type Role int
+
+// Key roles. RoleNone means the key matched nothing.
+const (
+	RoleNone Role = iota
+	RoleSender
+	RoleReceiver
+)
+
+// Resolve finds the ingest a key belongs to and which half it is. Every ingest
+// is compared even after a match so the work does not depend on the secret, and
+// each comparison is constant time.
+func (c *Config) Resolve(key string) (*Ingest, Role) {
+	var (
+		found *Ingest
+		role  = RoleNone
+	)
+
+	for idx := range c.Ingests {
+		ing := &c.Ingests[idx]
+
+		if constantEqual(key, ing.SenderKey) {
+			found, role = ing, RoleSender
+		}
+
+		if constantEqual(key, ing.ReceiverKey) {
+			found, role = ing, RoleReceiver
+		}
+	}
+
+	return found, role
+}
+
+func constantEqual(lhs, rhs string) bool {
+	return subtle.ConstantTimeCompare([]byte(lhs), []byte(rhs)) == 1
 }

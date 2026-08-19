@@ -27,3 +27,36 @@ func newKey(prefix string) (string, error) {
 
 	return prefix + hex.EncodeToString(buf), nil
 }
+
+// NewResourceKey returns an opaque identifier for a live session. It is not a
+// credential: it names a resource the publisher already authenticated to create.
+func NewResourceKey() (string, error) {
+	return newKey("")
+}
+
+// NewTestIngest builds an ingest with real keys without touching the disk.
+func NewTestIngest(label string) (*Ingest, error) {
+	senderKey, err := newKey(SenderPrefix)
+	if err != nil {
+		return nil, err
+	}
+
+	receiverKey, err := newKey(ReceiverPrefix)
+	if err != nil {
+		return nil, err
+	}
+
+	id, err := newKey("")
+	if err != nil {
+		return nil, err
+	}
+
+	return &Ingest{
+		ID:          id,
+		Label:       label,
+		SenderKey:   senderKey,
+		ReceiverKey: receiverKey,
+		Codecs:      []string{CodecH264},
+		DelayMS:     DelayDefaultMS,
+	}, nil
+}
