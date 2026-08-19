@@ -18,6 +18,7 @@ import (
 	"github.com/MarcFryd/wagaStrim/internal/ingest"
 	"github.com/MarcFryd/wagaStrim/internal/relay"
 	"github.com/MarcFryd/wagaStrim/internal/signal"
+	"github.com/MarcFryd/wagaStrim/internal/stats"
 	"github.com/MarcFryd/wagaStrim/internal/tray"
 	"github.com/MarcFryd/wagaStrim/internal/ui"
 	"github.com/pion/logging"
@@ -48,7 +49,9 @@ func run(headless bool, log logging.LeveledLogger) error {
 
 	log.Infof("config %s", cfg.Path())
 
-	srv, err := ui.New(cfg, log)
+	counters := stats.New()
+
+	srv, err := ui.New(cfg, log, counters)
 	if err != nil {
 		return err
 	}
@@ -66,7 +69,7 @@ func run(headless bool, log logging.LeveledLogger) error {
 
 	hub := relay.New()
 
-	whip, err := ingest.NewServer(cfg, log, engine, hub)
+	whip, err := ingest.NewServer(cfg, log, engine, hub, counters)
 	if err != nil {
 		return err
 	}

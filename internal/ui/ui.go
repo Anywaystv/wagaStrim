@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
+	"github.com/MarcFryd/wagaStrim/internal/reach"
+	"github.com/MarcFryd/wagaStrim/internal/stats"
 	"github.com/pion/logging"
 )
 
@@ -29,10 +31,11 @@ const shutdownGrace = 5 * time.Second
 
 // Server renders and mutates the config over HTTP.
 type Server struct {
-	cfg  *config.Config
-	log  logging.LeveledLogger
-	tpl  *template.Template
-	http *http.Server
+	cfg      *config.Config
+	log      logging.LeveledLogger
+	tpl      *template.Template
+	http     *http.Server
+	counters *stats.Registry
 }
 
 // pageData is what the template sees.
@@ -43,13 +46,13 @@ type pageData struct {
 }
 
 // New compiles the page and wires the routes.
-func New(cfg *config.Config, log logging.LeveledLogger) (*Server, error) {
+func New(cfg *config.Config, log logging.LeveledLogger, counters *stats.Registry) (*Server, error) {
 	tpl, err := template.ParseFS(assets, "web/index.html")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrParseTemplate, err)
 	}
 
-	srv := &Server{cfg: cfg, log: log, tpl: tpl}
+	srv := &Server{cfg: cfg, log: log, tpl: tpl, counters: counters}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", srv.handleHealth)
@@ -57,6 +60,8 @@ func New(cfg *config.Config, log logging.LeveledLogger) (*Server, error) {
 	mux.HandleFunc("POST /api/ingests", srv.handleAdd)
 	mux.HandleFunc("POST /api/ingests/remove", srv.handleRemove)
 	mux.HandleFunc("POST /api/ingests/delay", srv.handleDelay)
+	mux.HandleFunc("GET /api/stats", srv.handleStats)
+	mux.HandleFunc("GET /api/reachability", srv.handleReachability)
 	static, err := fs.Sub(assets, "web")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrEmbeddedAssets, err)
@@ -106,6 +111,42 @@ func (s *Server) Serve(ctx context.Context) error {
 		defer cancel()
 
 		return s.http.Shutdown(stop)
+	}
+}
+
+func (s *Server) handleStats(wri http.ResponseWriter, _ *http.Request) {
+	out := make(map[string]stats.Snapshot, len(s.cfg.Ingests))
+
+	for idx := range s.cfg.Ingests {
+		id := s.cfg.Ingests[idx].ID
+		out[id] = s.counters.Of(id)
+	}
+
+	s.writeJSON(wri, out)
+}
+
+// handleReachability runs a STUN lookup on demand rather than at startup, so a
+// machine with no internet still boots and serves its settings page.
+func (s *Server) handleReachability(wri http.ResponseWriter, req *http.Request) {
+	report := reach.Look(req.Context(), s.cfg.MediaPort, s.cfg.SignalPort)
+
+	// Remember a discovered address so the links stop reading as a placeholder.
+	if report.PublicHost != "" && s.cfg.PublicHost != report.PublicHost {
+		s.cfg.PublicHost = report.PublicHost
+
+		if err := s.cfg.Save(); err != nil {
+			s.log.Warnf("save public host: %v", err)
+		}
+	}
+
+	s.writeJSON(wri, report)
+}
+
+func (s *Server) writeJSON(wri http.ResponseWriter, body any) {
+	wri.Header().Set("content-type", "application/json")
+
+	if err := json.NewEncoder(wri).Encode(body); err != nil {
+		s.log.Warnf("encode response: %v", err)
 	}
 }
 

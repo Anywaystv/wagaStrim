@@ -67,3 +67,56 @@ document.addEventListener("change", (ev) => {
     delayMs: Number(slider.value),
   }).catch(() => {});
 });
+
+// Poll rather than stream: one small request a second costs less than holding a
+// socket open for a page that is usually not being looked at.
+async function poll() {
+  const res = await fetch("/api/stats");
+  if (!res.ok) return;
+
+  const all = await res.json();
+
+  for (const card of document.querySelectorAll("section[data-id]")) {
+    const snap = all[card.dataset.id];
+    if (!snap) continue;
+
+    const badge = card.querySelector("[data-status]");
+    badge.textContent = snap.live ? "live" : "idle";
+    badge.className = "status-button" + (snap.live ? " good" : "");
+
+    const line = card.querySelector("[data-stats]");
+    if (!snap.live) {
+      line.textContent = "Waiting for a publisher.";
+      continue;
+    }
+
+    const parts = [`${snap.bitrateKbps} kbps`, `up ${snap.liveSeconds}s`];
+    if (snap.late) parts.push(`${snap.late} late`);
+    if (snap.dropped) parts.push(`${snap.dropped} dropped`);
+
+    line.textContent = parts.join("  ·  ") + (snap.advice ? "  —  " + snap.advice : "");
+  }
+}
+
+setInterval(() => poll().catch(() => {}), 1000);
+poll().catch(() => {});
+
+document.getElementById("check").addEventListener("click", async (ev) => {
+  const out = document.getElementById("reach");
+  out.textContent = "Checking…";
+
+  try {
+    const res = await fetch("/api/reachability");
+    const r = await res.json();
+    const lan = r.lanHosts.length ? ` On this network: ${r.lanHosts.join(", ")}.` : "";
+    const pub = r.publicHost ? `Public address ${r.publicHost}. ` : "";
+
+    out.textContent = pub + r.note + lan +
+      ` Forward udp/${r.mediaPort} and tcp/${r.signalPort}.`;
+
+    if (r.publicHost) setTimeout(() => location.reload(), 1200);
+  } catch (err) {
+    out.textContent = "Could not check: " + err;
+    ev.target.textContent = "Retry";
+  }
+});

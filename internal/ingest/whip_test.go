@@ -9,6 +9,7 @@ import (
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
 	"github.com/MarcFryd/wagaStrim/internal/relay"
+	"github.com/MarcFryd/wagaStrim/internal/stats"
 	"github.com/pion/logging"
 	"github.com/pion/webrtc/v4"
 	pionmedia "github.com/pion/webrtc/v4/pkg/media"
@@ -43,7 +44,7 @@ func newTestServerWithRelay(t *testing.T) (*Server, *config.Ingest, *relay.Relay
 
 	hub := relay.New()
 
-	srv, err := NewServer(cfg, log, engine, hub)
+	srv, err := NewServer(cfg, log, engine, hub, stats.New())
 	require.NoError(t, err)
 	t.Cleanup(srv.Close)
 

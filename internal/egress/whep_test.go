@@ -11,6 +11,7 @@ import (
 	"github.com/MarcFryd/wagaStrim/internal/egress"
 	"github.com/MarcFryd/wagaStrim/internal/ingest"
 	"github.com/MarcFryd/wagaStrim/internal/relay"
+	"github.com/MarcFryd/wagaStrim/internal/stats"
 	"github.com/pion/logging"
 	"github.com/pion/webrtc/v4"
 	pionmedia "github.com/pion/webrtc/v4/pkg/media"
@@ -34,7 +35,7 @@ func pipeline(t *testing.T) (*ingest.Server, *egress.Server, *config.Ingest, *re
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
 	hub := relay.New()
 
-	whip, err := ingest.NewServer(cfg, log, engine, hub)
+	whip, err := ingest.NewServer(cfg, log, engine, hub, stats.New())
 	require.NoError(t, err)
 	t.Cleanup(whip.Close)
 
