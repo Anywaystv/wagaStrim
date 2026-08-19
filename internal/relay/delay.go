@@ -4,7 +4,6 @@
 package relay
 
 import (
-	"container/heap"
 	"math"
 	"sync"
 	"time"
@@ -102,7 +101,7 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 		playAt = b.playoutOf(pkt.Timestamp)
 	}
 
-	heap.Push(&b.queue, buffered{pkt: pkt, playAt: playAt})
+	b.queue.push(buffered{pkt: pkt, playAt: playAt})
 	b.ready.Signal()
 }
 
@@ -134,11 +133,11 @@ func (b *Buffer) Pop() (*rtp.Packet, bool) {
 	defer b.mu.Unlock()
 
 	for {
-		if b.closed && b.queue.Len() == 0 {
+		if b.closed && len(b.queue) == 0 {
 			return nil, false
 		}
 
-		if b.queue.Len() == 0 {
+		if len(b.queue) == 0 {
 			b.ready.Wait()
 
 			continue
@@ -146,9 +145,7 @@ func (b *Buffer) Pop() (*rtp.Packet, bool) {
 
 		wait := time.Until(b.queue[0].playAt)
 		if wait <= 0 {
-			item := heap.Pop(&b.queue).(buffered) //nolint:forcetypeassert // the heap holds one type.
-
-			return item.pkt, true
+			return b.queue.pop().pkt, true
 		}
 
 		b.waitUntilLocked(wait)
@@ -216,7 +213,7 @@ func (b *Buffer) Correct() bool {
 }
 
 func (b *Buffer) dropAllLocked() {
-	b.dropped += uint64(b.queue.Len()) //nolint:gosec // a queue length is never negative.
+	b.dropped += uint64(len(b.queue)) //nolint:gosec // a queue length is never negative.
 	b.queue = b.queue[:0]
 }
 
@@ -254,18 +251,63 @@ type buffered struct {
 	playAt time.Time
 }
 
-// packetHeap orders by playout time, which also repairs reordering: a packet
-// that arrives out of order simply sorts back into place.
+// packetHeap is a binary min-heap ordered by playout time, which also repairs
+// reordering: a packet arriving out of order sorts back into place.
+//
+// container/heap would do this, but its Push and Pop take and return `any`, so
+// every packet boxed a buffered value onto the heap. That was two allocations
+// per packet on a path that carries several hundred a second per camera.
 type packetHeap []buffered
 
-func (h packetHeap) Len() int           { return len(h) }
-func (h packetHeap) Less(i, j int) bool { return h[i].playAt.Before(h[j].playAt) }
-func (h packetHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *packetHeap) Push(item any)     { *h = append(*h, item.(buffered)) } //nolint:forcetypeassert // one type.
-func (h *packetHeap) Pop() any {
-	old := *h
-	last := old[len(old)-1]
-	*h = old[:len(old)-1]
+func (h *packetHeap) push(item buffered) {
+	*h = append(*h, item)
 
-	return last
+	child := len(*h) - 1
+	for child > 0 {
+		parent := (child - 1) / 2
+		if !(*h)[child].playAt.Before((*h)[parent].playAt) {
+			break
+		}
+
+		(*h)[child], (*h)[parent] = (*h)[parent], (*h)[child]
+		child = parent
+	}
+}
+
+func (h *packetHeap) pop() buffered {
+	old := *h
+	top := old[0]
+	last := len(old) - 1
+
+	old[0] = old[last]
+	old[last] = buffered{}
+	*h = old[:last]
+
+	h.sink(0)
+
+	return top
+}
+
+// sink restores the heap property downward from one index.
+func (h *packetHeap) sink(parent int) {
+	size := len(*h)
+
+	for {
+		left, smallest := 2*parent+1, parent
+
+		if left < size && (*h)[left].playAt.Before((*h)[smallest].playAt) {
+			smallest = left
+		}
+
+		if right := left + 1; right < size && (*h)[right].playAt.Before((*h)[smallest].playAt) {
+			smallest = right
+		}
+
+		if smallest == parent {
+			return
+		}
+
+		(*h)[parent], (*h)[smallest] = (*h)[smallest], (*h)[parent]
+		parent = smallest
+	}
 }
