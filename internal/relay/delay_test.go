@@ -239,3 +239,24 @@ func TestRetargetReachesARunningBuffer(t *testing.T) {
 func TestRetargetIgnoresAnUnknownIngest(t *testing.T) {
 	assert.NotPanics(t, func() { New().Retarget("gone", time.Second) })
 }
+
+// A link that reconnects repeatedly must not leave closed buffers behind.
+func TestUntrackForgetsAClosedBuffer(t *testing.T) {
+	hub := New()
+
+	_, err := hub.Publish("cam", webrtc.RTPCodecTypeVideo, videoCodec(), nil)
+	require.NoError(t, err)
+
+	for range 20 {
+		buf := NewBuffer(time.Second, testClock, "video/H264", nil)
+		hub.Track("cam", buf)
+		buf.Close()
+		hub.Untrack("cam", buf)
+	}
+
+	hub.mu.RLock()
+	held := len(hub.streams["cam"].buffers)
+	hub.mu.RUnlock()
+
+	assert.Zero(t, held, "twenty reconnects must not leave twenty dead buffers")
+}

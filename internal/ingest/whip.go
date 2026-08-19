@@ -310,6 +310,7 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 	defer buf.Close()
 
 	s.relay.Track(ing.ID, buf)
+	defer s.relay.Untrack(ing.ID, buf)
 
 	go relay.Feed(out, buf, func(err error) { s.log.Warnf("ingest %s: forward: %v", ing.Label, err) })
 
