@@ -10,11 +10,9 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
-	"net"
 	"net/http"
 	"net/http/pprof"
 	"slices"
@@ -23,6 +21,7 @@ import (
 	"github.com/MarcFryd/wagaStrim/internal/autostart"
 	"github.com/MarcFryd/wagaStrim/internal/config"
 	"github.com/MarcFryd/wagaStrim/internal/ingest"
+	"github.com/MarcFryd/wagaStrim/internal/listen"
 	"github.com/MarcFryd/wagaStrim/internal/reach"
 	"github.com/MarcFryd/wagaStrim/internal/stats"
 	"github.com/pion/logging"
@@ -30,8 +29,6 @@ import (
 
 //go:embed all:web
 var assets embed.FS
-
-const shutdownGrace = 5 * time.Second
 
 // Server renders and mutates the config over HTTP.
 type Server struct {
@@ -52,6 +49,11 @@ type pageData struct {
 	Ingests      []cameraView
 	SenderBase   string
 	ReceiverBase string
+
+	// The slider cannot render a bound it does not know. A deployment that
+	// lowered the floor would otherwise show a control that refuses its own
+	// configured value.
+	Floor int
 }
 
 // cameraView pairs a camera with the target it actually plays out at. In a sync
@@ -157,47 +159,14 @@ func (s *Server) Addr() string {
 	return fmt.Sprintf("http://127.0.0.1:%d", s.cfg.UIPort)
 }
 
-// Serve blocks until the context is canceled.
+// Serve blocks until the context is canceled. Loopback only: this page is
+// unauthenticated, so the bind address is the whole authorization model.
 func (s *Server) Serve(ctx context.Context) error {
-	addr := fmt.Sprintf("127.0.0.1:%d", s.cfg.UIPort)
-
-	var lcfg net.ListenConfig
-
-	listener, err := lcfg.Listen(ctx, "tcp", addr)
-	if err != nil {
-		return fmt.Errorf("%w: ui on %s: %w", ErrServe, addr, err)
-	}
-
-	errs := make(chan error, 1)
-
-	go func() { errs <- s.http.Serve(listener) }()
-
-	s.log.Infof("settings on %s", s.Addr())
-
-	select {
-	case err := <-errs:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-
-		return fmt.Errorf("%w: ui: %w", ErrServe, err)
-	case <-ctx.Done():
-		stop, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
-		defer cancel()
-
-		return s.http.Shutdown(stop)
-	}
+	return listen.Serve(ctx, s.log, s.http, fmt.Sprintf("127.0.0.1:%d", s.cfg.UIPort), "settings")
 }
 
 func (s *Server) handleStats(wri http.ResponseWriter, _ *http.Request) {
-	ingests := s.cfg.List()
-	out := make(map[string]stats.Snapshot, len(ingests))
-
-	for idx := range ingests {
-		out[ingests[idx].ID] = s.counters.Of(ingests[idx].ID)
-	}
-
-	s.writeJSON(wri, out)
+	s.writeJSON(wri, s.counters.Report(s.cfg.IngestIDs()))
 }
 
 // handleReachability runs a STUN lookup on demand rather than at startup, so a
@@ -305,6 +274,7 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 
 	data := pageData{
 		Ingests: views,
+		Floor:   s.cfg.Floor(),
 		// Moblin chooses the protocol from the scheme and rewrites whip to http
 		// itself, so it rejects a link that already says http. The line under the
 		// field tells anyone using another WHIP client to put http back.

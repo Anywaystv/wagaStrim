@@ -75,13 +75,13 @@
 
     <div class="field">
       <label for="delay-{{.ID}}">
-        Delay <output data-delay-out>{{.DelayMS}}</output> ms. Minimum 2000
+        Delay <output data-delay-out>{{.DelayMS}}</output> ms. Minimum {{$.Floor}}
         {{if ne .Effective .DelayMS}}
           <span class="pill">playing out at {{.Effective}} ms for group {{.SyncGroup}}</span>
         {{end}}
       </label>
       <div class="row">
-        <input type="range" id="delay-{{.ID}}" min="2000" max="10000" step="100"
+        <input type="range" id="delay-{{.ID}}" min="{{$.Floor}}" max="10000" step="100"
                value="{{.DelayMS}}" data-delay="{{.ID}}">
       </div>
       <p class="muted">Two seconds of buffer is what keeps OBS fed through a dropout.</p>

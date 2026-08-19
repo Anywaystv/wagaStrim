@@ -23,12 +23,25 @@ func TestBitrateAveragesAcrossSamples(t *testing.T) {
 	entry.samples = []sample{{at: base, bytes: 0}, {at: base.Add(2 * time.Second), bytes: 250000}}
 
 	// 250 kB over 2 s is 1 Mbit/s.
-	assert.InDelta(t, 1000, bitrate(entry.samples), 5)
+	assert.InDelta(t, 1000, bitrate(entry.samples, time.Now()), 5)
 }
 
 func TestASingleSampleReportsNothing(t *testing.T) {
-	assert.Equal(t, 0, bitrate([]sample{{at: time.Now(), bytes: 999}}),
+	assert.Equal(t, 0, bitrate([]sample{{at: time.Now(), bytes: 999}}, time.Now()),
 		"one sample cannot describe a rate")
+}
+
+// A phone that stops sending without dropping its ICE connection reads as live.
+// If its last rate stood forever, nothing watching could tell that camera from a
+// working one, and the fallback scene would never fire.
+func TestBitrateFallsToZeroWhenMediaStops(t *testing.T) {
+	base := time.Now().Add(-time.Minute)
+	samples := []sample{{at: base, bytes: 0}, {at: base.Add(2 * time.Second), bytes: 250000}}
+
+	assert.InDelta(t, 1000, bitrate(samples, base.Add(2*time.Second)), 5,
+		"while packets were arriving the rate is the rate")
+	assert.Equal(t, 0, bitrate(samples, time.Now()),
+		"a window with nothing in it is not a bitrate")
 }
 
 func TestStoppedKeepsTheLastState(t *testing.T) {

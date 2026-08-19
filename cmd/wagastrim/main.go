@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
+	"github.com/MarcFryd/wagaStrim/internal/control"
 	"github.com/MarcFryd/wagaStrim/internal/egress"
 	"github.com/MarcFryd/wagaStrim/internal/ingest"
 	"github.com/MarcFryd/wagaStrim/internal/relay"
@@ -98,10 +99,18 @@ func run(headless bool, log logging.LeveledLogger) error {
 	ctx, stop := signalpkg.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
 
 	go func() { errs <- srv.Serve(ctx) }()
 	go func() { errs <- public.Serve(ctx) }()
+
+	// Only where a deployment configured a token. A desktop install has no
+	// second machine that owns its cameras, so it never opens this port.
+	if cfg.ControlToken != "" {
+		control := control.New(cfg, log, counters, revoke)
+
+		go func() { errs <- control.Serve(ctx) }()
+	}
 
 	log.Infof("media on udp/%d, forward it along with tcp/%d", cfg.MediaPort, cfg.SignalPort)
 
