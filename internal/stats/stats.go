@@ -19,13 +19,14 @@ const (
 
 // Snapshot is what the UI renders for one ingest.
 type Snapshot struct {
-	Live      bool   `json:"live"`
-	Bitrate   int    `json:"bitrateKbps"`
-	Late      uint64 `json:"late"`
-	Dropped   uint64 `json:"dropped"`
-	Since     int    `json:"liveSeconds"`
-	Advice    string `json:"advice,omitempty"`
-	Publisher string `json:"publisher,omitempty"`
+	Live     bool   `json:"live"`
+	Bitrate  int    `json:"bitrateKbps"`
+	Late     uint64 `json:"late"`
+	Dropped  uint64 `json:"dropped"`
+	Since    int    `json:"liveSeconds"`
+	Advice   string `json:"advice,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Switches int    `json:"switches"`
 }
 
 type sample struct {
@@ -35,6 +36,13 @@ type sample struct {
 
 type counter struct {
 	samples []sample
+	path    string
+
+	// Renomination re-homes a stream onto a better candidate without a
+	// reconnect. Counting the moves is how anyone can tell it did anything: the
+	// stream simply keeps working, which looks identical to nothing happening.
+	switches int
+
 	total   uint64
 	started time.Time
 	live    bool
@@ -63,7 +71,16 @@ func (r *Registry) Publishing(ingestID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.counters[ingestID] = &counter{started: time.Now(), live: true}
+	// Keep the path across a reconnect so the count survives; a phone that
+	// re-homes twice through one tunnel is the thing worth seeing.
+	previous := r.counters[ingestID]
+	fresh := &counter{started: time.Now(), live: true}
+
+	if previous != nil {
+		fresh.path, fresh.switches = previous.path, previous.switches
+	}
+
+	r.counters[ingestID] = fresh
 }
 
 // Stopped marks an ingest idle but keeps the counters, so the last known state
@@ -76,6 +93,32 @@ func (r *Registry) Stopped(ingestID string) {
 		entry.live = false
 		entry.samples = nil
 	}
+}
+
+// Path records the candidate pair now carrying the stream. The first pair is
+// the connection being established, not a switch, so it is not counted.
+func (r *Registry) Path(ingestID, path string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// A candidate pair is selected before the connection reports itself
+	// connected, so the counter may not exist yet. Dropping the first path here
+	// is how the whole feature silently reported nothing.
+	entry, ok := r.counters[ingestID]
+	if !ok {
+		entry = &counter{}
+		r.counters[ingestID] = entry
+	}
+
+	if entry.path == path {
+		return
+	}
+
+	if entry.path != "" {
+		entry.switches++
+	}
+
+	entry.path = path
 }
 
 // Observe records bytes arriving and the buffer's own counters.
@@ -127,10 +170,12 @@ func (r *Registry) Of(ingestID string) Snapshot {
 	}
 
 	snap := Snapshot{
-		Live:    entry.live,
-		Bitrate: bitrate(entry.samples),
-		Late:    entry.late,
-		Dropped: entry.dropped,
+		Live:     entry.live,
+		Bitrate:  bitrate(entry.samples),
+		Late:     entry.late,
+		Dropped:  entry.dropped,
+		Path:     entry.path,
+		Switches: entry.switches,
 	}
 
 	if entry.live {
