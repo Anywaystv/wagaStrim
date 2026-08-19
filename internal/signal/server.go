@@ -46,9 +46,16 @@ func New(cfg *config.Config, log logging.LeveledLogger, whip *ingest.Server, whe
 	}
 
 	mux := http.NewServeMux()
+	// Two ways in for each half, because encoders disagree about where a key
+	// belongs. Moblin takes one URL and nothing else, so the key is a path
+	// segment; OBS 30.1 and the WHIP specification put it in an Authorization
+	// header and leave the URL clean. Both reach the same handler: which field
+	// a person filled in is not a different camera.
 	mux.HandleFunc("POST /whip/{key}", srv.handlePublish)
+	mux.HandleFunc("POST /whip", srv.handlePublish)
 	mux.HandleFunc("DELETE /whip/resource/{resource}", srv.handleTeardown)
 	mux.HandleFunc("POST /whep/{key}", srv.handleSubscribe)
+	mux.HandleFunc("POST /whep", srv.handleSubscribe)
 	mux.HandleFunc("DELETE /whep/resource/{resource}", srv.handleUnsubscribe)
 	mux.HandleFunc("GET /player/{key}", srv.handlePlayer)
 
@@ -81,7 +88,7 @@ func (s *Server) negotiate(
 		return
 	}
 
-	key := req.PathValue("key")
+	key := keyFrom(req)
 
 	answer, resource, err := run(key, string(offer))
 	if err != nil {
@@ -91,6 +98,30 @@ func (s *Server) negotiate(
 	}
 
 	s.writeSDP(wri, answer, prefix+resource)
+}
+
+// keyFrom reads the key a request identifies itself with, from the path when the
+// URL carries one and from a bearer token otherwise. The path wins when both
+// are present: it is the half a person can see in front of them, so a stale
+// token left in an encoder's other field cannot silently redirect a publish to
+// a different camera.
+//
+// An empty result is not special-cased here. It resolves to no camera like any
+// other key that names nothing, and comes back as the same 404 — a request with
+// no credential learns nothing a request with a wrong one does not.
+func keyFrom(req *http.Request) string {
+	if key := req.PathValue("key"); key != "" {
+		return key
+	}
+
+	const scheme = "bearer "
+
+	header := strings.TrimSpace(req.Header.Get("authorization"))
+	if len(header) <= len(scheme) || !strings.EqualFold(header[:len(scheme)], scheme) {
+		return ""
+	}
+
+	return strings.TrimSpace(header[len(scheme):])
 }
 
 // writeSDP returns a WHIP or WHEP answer. The body comes from our own

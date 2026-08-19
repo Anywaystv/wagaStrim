@@ -258,6 +258,14 @@ without knocking the phone offline.
 link says what it is even once unmasked and even after it has been pasted somewhere out of
 context.
 
+**A key may arrive in the path or in a bearer token, and the two are the same door.** Moblin takes
+one URL and nothing else, so `POST /whip/<s_...>` is what it can express. OBS 30.1 and the WHIP
+specification put the key in `Authorization: Bearer` and leave the URL clean, so `POST /whip` with
+that header resolves identically. The path wins when a client somehow sends both: it is the half a
+person can see in front of them, so a stale token left in an encoder's other field cannot silently
+redirect a publish. A request carrying no key at all resolves to no ingest and gets the same 404 as
+one carrying a wrong key — a caller with nothing learns nothing a caller with rubbish does not.
+
 **Refuse a swapped link, and say which way round it goes.** Both WHIP and WHEP are a POST of
 `application/sdp`, so the endpoint cannot tell the two clients apart by method or content type.
 The key role is the mechanism:
