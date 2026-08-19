@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 wagaStrim contributors
+// SPDX-License-Identifier: MIT
+
 // No framework. Fetch plus a few listeners is the whole client.
 // A failed request used to leave the page silently unchanged, which reads as the
 // button being broken. Say so on the button itself instead.

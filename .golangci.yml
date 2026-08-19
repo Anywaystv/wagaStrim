@@ -80,6 +80,13 @@ linters:
   settings:
     dupl:
       threshold: 40
+    goheader:
+      # pion enables goheader without a template, which makes it a no-op, and
+      # polices headers in CI with REUSE instead. Configuring it here catches a
+      # missing header at lint time rather than after a push.
+      template: |-
+        SPDX-FileCopyrightText: 2026 wagaStrim contributors
+        SPDX-License-Identifier: MIT
     staticcheck:
       checks:
         - all
