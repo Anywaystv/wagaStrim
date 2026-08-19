@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 wagaStrim contributors
+// SPDX-License-Identifier: MIT
+
 package ingest
 
 import (

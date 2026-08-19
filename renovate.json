@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "description": "Pion moves together; one PR per week keeps the media stack consistent rather than drip fed.",
+      "matchPackagePatterns": ["^github.com/pion/"],
+      "groupName": "pion",
+      "schedule": ["before 6am on monday"]
+    }
+  ]
+}

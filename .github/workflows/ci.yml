@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: 2026 wagaStrim contributors
+# SPDX-License-Identifier: MIT
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofumpt
+        run: |
+          go install mvdan.cc/gofumpt@latest
+          test -z "$(gofumpt -l .)" || { gofumpt -d .; exit 1; }
+
+      - name: vet
+        run: go vet ./...
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.10.1
+
+      # golangci-lint runs one GOOS at a time, so the tray and headless variants
+      # are separate passes or half the code is never linted.
+      - name: lint headless build
+        run: golangci-lint run --build-tags notray
+
+      # dupl cannot see a copy in another package or behind a build tag.
+      - name: duplicate function bodies
+        run: ./scripts/dupes.py
+
+      - name: test
+        run: go test -race ./...
+
+  build:
+    name: Cross compile
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64, tags: notray }
+          - { goos: linux, goarch: arm64, tags: notray }
+          - { goos: windows, goarch: amd64, tags: "" }
+          - { goos: darwin, goarch: arm64, tags: "" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # CGO off everywhere: only the macOS tray needs it, and that build is done
+      # on a mac at release time rather than cross compiled here.
+      - run: go build -tags "${{ matrix.tags }}" ./cmd/wagastrim
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0

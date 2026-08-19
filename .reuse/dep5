@@ -2,6 +2,6 @@ Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: wagaStrim
 Source: https://github.com/MarcFryd/wagaStrim
 
-Files: README.md AGENTS.md PLAN.md go.mod go.sum renovate.json
+Files: README.md AGENTS.md PLAN.md go.mod go.sum renovate.json .gitignore
 Copyright: 2026 wagaStrim contributors
 License: MIT

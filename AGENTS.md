@@ -67,10 +67,11 @@ it; do not add `//nolint` to get past a rule Pion lives with.
 
 The rules that bite hardest, because they are not what an LLM writes by default:
 
-- **SPDX header on every file**, Go and YAML alike, as the first two lines:
-  `// SPDX-FileCopyrightText: 2026 wagaStrim contributors` then
-  `// SPDX-License-Identifier: MIT`. Enforced by `goheader`. Carry a `.reuse/dep5` and
-  `LICENSES/MIT.txt` the way Pion does.
+- **SPDX header on every file that can carry a comment**, Go, YAML, CSS, JS and HTML alike, as the
+  first two lines. Files that cannot, like `go.sum` and `.gitignore`, are listed in `.reuse/dep5`
+  instead. Pion enables `goheader` without a template, which makes it a no-op and leaves headers to
+  a REUSE job in CI; here the template is configured, so a missing header fails `golangci-lint`
+  locally rather than after a push.
 - **Sentinel errors only.** `err113` forbids `errors.New` and bare `fmt.Errorf` at a call site.
   Declare every error once in a package-level `var` block in `errors.go`, named `ErrThing`
   (`errname`), message lowercase and unpunctuated. At the call site wrap it:
