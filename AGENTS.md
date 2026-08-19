@@ -21,9 +21,13 @@ afternoon. Every addition spends that budget.
   growth stays visible.
 - Every phase pays for its lines in capability. Adding a lot of code and no new behavior is the
   signal to re-read that code. Growth that buys something is fine at any size.
-- Before writing a new function, look for the one that already does it. Three of the four
-  duplications removed so far were byte-identical copies written weeks apart, each because nobody
-  checked the other package first.
+- Before writing a new function, look for the one that already does it. This rule kept being
+  broken while it was only a rule, so it is now checked two ways, and both run before a commit:
+  `golangci-lint` with `dupl` at 40 tokens catches near-copies with renamed variables, and
+  `scripts/dupes.py` catches byte-identical bodies that `dupl` structurally cannot see, because it
+  analyses one package at a time for one GOOS. Between them they cover the two mistakes actually
+  made here: the SDP exchange copied into a second package, and `run` copied into a build-tagged
+  sibling file. Neither catches a near-copy across packages; that one still needs reading.
 - Delete on the way past. An export with no caller, a field that is never read, a counter that is
   never incremented, a helper that only forwards: remove it in the change that revealed it rather
   than filing it.
@@ -131,8 +135,8 @@ Output that reads as machine-generated gets rejected regardless of whether it wo
 Never push straight from generation.
 
 1. Re-read the full diff yourself, top to bottom, as a reviewer and not as the author.
-2. Run `gofumpt -l .`, `go vet ./...`, `golangci-lint run`, and `go test ./...`. All clean, no
-   exceptions, no `//nolint` added to make it so.
+2. Run `gofumpt -l .`, `go vet ./...`, `golangci-lint run`, `scripts/dupes.py`, and
+   `go test -race ./...`. All clean, no exceptions, no `//nolint` added to make it so.
 3. Run `/code-review` on the diff. Fix or explicitly justify every finding.
 4. Run `/slop-check`.
 5. Only then commit.

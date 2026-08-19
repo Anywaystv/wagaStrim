@@ -93,7 +93,15 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 }
 
-func (s *Server) handlePublish(wri http.ResponseWriter, req *http.Request) {
+// negotiate reads an offer, hands it to whichever endpoint owns it, and writes
+// the answer. WHIP and WHEP differ in the negotiator and the resource prefix.
+func (s *Server) negotiate(
+	wri http.ResponseWriter,
+	req *http.Request,
+	prefix string,
+	run func(key, offer string) (string, string, error),
+	refuse func(http.ResponseWriter, string, error),
+) {
 	offer, err := io.ReadAll(http.MaxBytesReader(wri, req.Body, maxOfferBytes))
 	if err != nil {
 		http.Error(wri, "offer too large", http.StatusRequestEntityTooLarge)
@@ -101,14 +109,16 @@ func (s *Server) handlePublish(wri http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	answer, resource, err := s.whip.Publish(req.PathValue("key"), string(offer))
+	key := req.PathValue("key")
+
+	answer, resource, err := run(key, string(offer))
 	if err != nil {
-		s.reject(wri, req.PathValue("key"), err)
+		refuse(wri, key, err)
 
 		return
 	}
 
-	s.writeSDP(wri, answer, "/whip/resource/"+resource)
+	s.writeSDP(wri, answer, prefix+resource)
 }
 
 // writeSDP returns a WHIP or WHEP answer. The body comes from our own
@@ -127,42 +137,31 @@ func (s *Server) writeSDP(wri http.ResponseWriter, answer, location string) {
 	}
 }
 
-func (s *Server) handleTeardown(wri http.ResponseWriter, req *http.Request) {
-	if err := s.whip.Teardown(req.PathValue("resource")); err != nil {
+// release ends a session named by its resource id.
+func release(wri http.ResponseWriter, req *http.Request, run func(string) error) {
+	if err := run(req.PathValue("resource")); err != nil {
 		http.Error(wri, "not found", http.StatusNotFound)
 
 		return
 	}
 
 	wri.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handlePublish(wri http.ResponseWriter, req *http.Request) {
+	s.negotiate(wri, req, "/whip/resource/", s.whip.Publish, s.reject)
+}
+
+func (s *Server) handleTeardown(wri http.ResponseWriter, req *http.Request) {
+	release(wri, req, s.whip.Teardown)
 }
 
 func (s *Server) handleSubscribe(wri http.ResponseWriter, req *http.Request) {
-	offer, err := io.ReadAll(http.MaxBytesReader(wri, req.Body, maxOfferBytes))
-	if err != nil {
-		http.Error(wri, "offer too large", http.StatusRequestEntityTooLarge)
-
-		return
-	}
-
-	answer, resource, err := s.whep.Subscribe(req.PathValue("key"), string(offer))
-	if err != nil {
-		s.rejectSubscribe(wri, err)
-
-		return
-	}
-
-	s.writeSDP(wri, answer, "/whep/resource/"+resource)
+	s.negotiate(wri, req, "/whep/resource/", s.whep.Subscribe, s.rejectSubscribe)
 }
 
 func (s *Server) handleUnsubscribe(wri http.ResponseWriter, req *http.Request) {
-	if err := s.whep.Teardown(req.PathValue("resource")); err != nil {
-		http.Error(wri, "not found", http.StatusNotFound)
-
-		return
-	}
-
-	wri.WriteHeader(http.StatusNoContent)
+	release(wri, req, s.whep.Teardown)
 }
 
 // handlePlayer serves the page an OBS Browser Source points at. The key stays in
@@ -191,7 +190,7 @@ func (s *Server) handlePlayer(wri http.ResponseWriter, req *http.Request) {
 }
 
 // rejectSubscribe mirrors reject, in the other direction.
-func (s *Server) rejectSubscribe(wri http.ResponseWriter, cause error) {
+func (s *Server) rejectSubscribe(wri http.ResponseWriter, _ string, cause error) {
 	s.log.Warnf("subscribe rejected: %v", cause)
 
 	switch {
