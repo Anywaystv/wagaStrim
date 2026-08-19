@@ -126,6 +126,30 @@ func (r *Relay) Track(ingestID string, buf *Buffer) {
 	stream.mu.Unlock()
 }
 
+// Untrack forgets a buffer whose track has ended. Without it a link that
+// reconnects repeatedly leaves a closed buffer behind on every attempt, and
+// Retarget walks a list that only ever grows.
+func (r *Relay) Untrack(ingestID string, buf *Buffer) {
+	r.mu.RLock()
+	stream, ok := r.streams[ingestID]
+	r.mu.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+
+	for idx, held := range stream.buffers {
+		if held == buf {
+			stream.buffers = append(stream.buffers[:idx], stream.buffers[idx+1:]...)
+
+			return
+		}
+	}
+}
+
 // Retarget moves every running buffer of one ingest to a new playout target.
 func (r *Relay) Retarget(ingestID string, target time.Duration) {
 	r.mu.RLock()

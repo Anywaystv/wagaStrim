@@ -15,7 +15,7 @@
       <h2>Reachability</h2>
       <button class="button" id="check">Check</button>
     </div>
-    <p class="muted" id="reach">Not checked yet.</p>
+    <p class="muted" id="reach" role="status" aria-live="polite">Not checked yet.</p>
   </section>
 
   {{if not .Ingests}}
@@ -25,7 +25,11 @@
   {{range .Ingests}}
   <section class="card" data-id="{{.ID}}">
     <div class="row between">
-      <input type="text" class="label-edit" value="{{.Label}}" maxlength="48" data-label="{{.ID}}">
+      <h2>
+        <label class="sr-only" for="label-{{.ID}}">Camera name</label>
+        <input type="text" class="label-edit" id="label-{{.ID}}" value="{{.Label}}"
+               maxlength="48" data-label="{{.ID}}">
+      </h2>
       <span class="row">
         <span class="status-button" data-status>idle</span>
         {{range .Codecs}}<span class="pill">{{.}}</span>{{end}}
@@ -36,41 +40,44 @@
     <p class="muted" data-stats>Waiting for a publisher.</p>
 
     <div class="field">
-      <label>Sender — paste into Moblin</label>
+      <span class="field-label" id="send-{{.ID}}">Sender — paste into Moblin</span>
       <div class="row">
-        <div class="secret masked" data-destination="Moblin" data-secret="{{$.SenderBase}}{{.SenderKey}}">••••••••••••••••</div>
-        <button class="button" data-reveal>Show</button>
-        <button class="button" data-copy>Copy</button>
+        <div class="secret masked" role="group" aria-labelledby="send-{{.ID}}"
+             data-destination="Moblin" data-secret="{{$.SenderBase}}{{.SenderKey}}">••••••••••••••••</div>
+        <button class="button" data-reveal aria-label="Show the sender link for {{.Label}}">Show</button>
+        <button class="button" data-copy aria-label="Copy the sender link for {{.Label}}">Copy</button>
       </div>
     </div>
 
     <div class="field">
-      <label>Receiver — add a Browser Source in OBS and paste this as the URL</label>
+      <span class="field-label" id="recv-{{.ID}}">Receiver — add a Browser Source in OBS and paste this as the URL</span>
       <div class="row">
-        <div class="secret masked" data-destination="OBS" data-secret="{{$.ReceiverBase}}{{.ReceiverKey}}">••••••••••••••••</div>
-        <button class="button" data-reveal>Show</button>
-        <button class="button" data-copy>Copy</button>
+        <div class="secret masked" role="group" aria-labelledby="recv-{{.ID}}"
+             data-destination="OBS" data-secret="{{$.ReceiverBase}}{{.ReceiverKey}}">••••••••••••••••</div>
+        <button class="button" data-reveal aria-label="Show the receiver link for {{.Label}}">Show</button>
+        <button class="button" data-copy aria-label="Copy the receiver link for {{.Label}}">Copy</button>
       </div>
     </div>
 
     <div class="field">
-      <label>
+      <label for="delay-{{.ID}}">
         Delay <output data-delay-out>{{.DelayMS}}</output> ms — minimum 2000
         {{if ne .Effective .DelayMS}}
           <span class="pill">playing out at {{.Effective}} ms for group {{.SyncGroup}}</span>
         {{end}}
       </label>
       <div class="row">
-        <input type="range" min="2000" max="10000" step="100" value="{{.DelayMS}}" data-delay="{{.ID}}">
+        <input type="range" id="delay-{{.ID}}" min="2000" max="10000" step="100"
+               value="{{.DelayMS}}" data-delay="{{.ID}}">
       </div>
       <p class="muted">Two seconds of buffer is what keeps OBS fed through a dropout.</p>
     </div>
 
     <div class="field">
-      <label>Sync group — cameras sharing a name play out together</label>
+      <label for="group-{{.ID}}">Sync group — cameras sharing a name play out together</label>
       <div class="row">
-        <input type="text" value="{{.SyncGroup}}" maxlength="32" placeholder="none"
-               data-group="{{.ID}}">
+        <input type="text" id="group-{{.ID}}" value="{{.SyncGroup}}" maxlength="32"
+               placeholder="none" data-group="{{.ID}}">
         <span class="muted">Leave empty unless two cameras appear on screen at once.
         Grouped cameras all wait for the slowest.</span>
       </div>
@@ -86,6 +93,7 @@
   <section class="card">
     <div class="row between">
       <span class="row">
+        <label class="sr-only" for="label">Name for the new camera</label>
         <input type="text" id="label" placeholder="Camera name" maxlength="48">
         <button class="button" id="add">Add camera</button>
       </span>
