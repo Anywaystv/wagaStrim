@@ -8,10 +8,14 @@ package relay
 import (
 	"fmt"
 	"sync"
+	"time"
 
-	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 )
+
+// correctionInterval is how often a buffer is checked for drift. Faster than
+// this is noise; slower and a growing buffer takes too long to notice.
+const correctionInterval = time.Second
 
 // Stream is the live media of one ingest.
 type Stream struct {
@@ -118,11 +122,35 @@ func (r *Relay) Drop(ingestID string) {
 	delete(r.streams, ingestID)
 }
 
-// Forward writes one packet to every subscriber of a track.
-func Forward(track *webrtc.TrackLocalStaticRTP, pkt *rtp.Packet) error {
-	if err := track.WriteRTP(pkt); err != nil {
-		return fmt.Errorf("%w: %w", ErrBuildTrack, err)
-	}
+// Feed runs one track's buffer: packets pushed in are written out on their
+// scheduled playout, and drift is corrected while it runs. It returns when the
+// buffer is closed.
+func Feed(track *webrtc.TrackLocalStaticRTP, buf *Buffer, onError func(error)) {
+	stop := make(chan struct{})
+	defer close(stop)
 
-	return nil
+	go func() {
+		tick := time.NewTicker(correctionInterval)
+		defer tick.Stop()
+
+		for {
+			select {
+			case <-tick.C:
+				buf.Correct()
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	for {
+		pkt, ok := buf.Pop()
+		if !ok {
+			return
+		}
+
+		if err := track.WriteRTP(pkt); err != nil {
+			onError(fmt.Errorf("%w: %w", ErrBuildTrack, err))
+		}
+	}
 }
