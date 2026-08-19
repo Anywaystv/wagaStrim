@@ -99,3 +99,24 @@ func TestEveryCameraGetsItsOwnKeys(t *testing.T) {
 
 	assert.Len(t, seen, 6)
 }
+
+func TestCodecSetIsOrderedAndFiltered(t *testing.T) {
+	cfg, ids := threeCams(t)
+
+	require.NoError(t, cfg.SetCodecs(ids[0], []string{"av1", "nonsense", "h264"}))
+
+	assert.Equal(t, []string{CodecH264, CodecAV1}, cfg.List()[0].Codecs,
+		"unknown names are dropped and the rest keep preference order")
+}
+
+// An empty set would negotiate nothing and leave a camera that can never
+// connect, with no clue why.
+func TestEmptyCodecSetFallsBackToH264(t *testing.T) {
+	cfg, ids := threeCams(t)
+
+	require.NoError(t, cfg.SetCodecs(ids[0], nil))
+	assert.Equal(t, []string{CodecH264}, cfg.List()[0].Codecs)
+
+	require.NoError(t, cfg.SetCodecs(ids[0], []string{"vp9"}))
+	assert.Equal(t, []string{CodecH264}, cfg.List()[0].Codecs)
+}

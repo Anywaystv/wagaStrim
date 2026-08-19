@@ -32,7 +32,6 @@
       </h2>
       <span class="row">
         <span class="status-button" data-status>idle</span>
-        {{range .Codecs}}<span class="pill">{{.}}</span>{{end}}
         <button class="button quiet" data-remove="{{.ID}}">Remove</button>
       </span>
     </div>
@@ -72,6 +71,18 @@
       </div>
       <p class="muted">Two seconds of buffer is what keeps OBS fed through a dropout.</p>
     </div>
+
+    <fieldset class="field codecs" data-codecs="{{.ID}}">
+      <legend>Video codecs offered to the phone</legend>
+      {{range .Codecs}}
+        <label class="codec">
+          <input type="checkbox" value="{{.Name}}" {{if .On}}checked{{end}}>
+          <span>{{.Label}}</span>
+          {{if .Caveat}}<small>{{.Caveat}}</small>{{end}}
+        </label>
+      {{end}}
+      <p class="muted">Changing this disconnects the camera; the set is chosen when it connects.</p>
+    </fieldset>
 
     <div class="field">
       <label for="group-{{.ID}}">Sync group — cameras sharing a name play out together</label>

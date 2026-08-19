@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
@@ -56,6 +57,44 @@ type pageData struct {
 type cameraView struct {
 	config.Ingest
 	Effective int
+	Codecs    []codecChoice
+}
+
+// codecChoice is one toggle plus the caveat that applies to it. Both caveats
+// describe combinations that negotiate successfully and then show nothing, so
+// they belong next to the control, not in a README.
+type codecChoice struct {
+	Name   string
+	Label  string
+	On     bool
+	Caveat string
+}
+
+func codecChoices(on []string) []codecChoice {
+	labels := map[string]string{
+		config.CodecH264: "H.264",
+		config.CodecH265: "H.265",
+		config.CodecAV1:  "AV1",
+	}
+	caveats := map[string]string{
+		config.CodecH265: "Needs OBS started with --enable-features=WebRtcAllowH265Receive. " +
+			"Its bundled Chromium is 133, which has the flag but not the default.",
+		config.CodecAV1: "No iPhone can encode AV1, so Moblin will never pick it. " +
+			"For a desktop or OBS publisher only.",
+	}
+
+	out := make([]codecChoice, 0, len(config.AllCodecs()))
+
+	for _, name := range config.AllCodecs() {
+		out = append(out, codecChoice{
+			Name:   name,
+			Label:  labels[name],
+			On:     slices.Contains(on, name),
+			Caveat: caveats[name],
+		})
+	}
+
+	return out
 }
 
 // New compiles the page and wires the routes.
@@ -82,6 +121,7 @@ func New(
 	mux.HandleFunc("GET /api/stats", srv.handleStats)
 	mux.HandleFunc("POST /api/ingests/group", srv.handleGroup)
 	mux.HandleFunc("POST /api/ingests/label", srv.handleLabel)
+	mux.HandleFunc("POST /api/ingests/codecs", srv.handleCodecs)
 	mux.HandleFunc("GET /api/reachability", srv.handleReachability)
 	static, err := fs.Sub(assets, "web")
 	if err != nil {
@@ -184,7 +224,11 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 	views := make([]cameraView, len(cams))
 
 	for idx, cam := range cams {
-		views[idx] = cameraView{Ingest: cam, Effective: s.cfg.EffectiveDelay(cam.ID)}
+		views[idx] = cameraView{
+			Ingest:    cam,
+			Effective: s.cfg.EffectiveDelay(cam.ID),
+			Codecs:    codecChoices(cam.Codecs),
+		}
 	}
 
 	data := pageData{
@@ -298,6 +342,25 @@ func (s *Server) handleLabel(wri http.ResponseWriter, req *http.Request) {
 	},
 	) error {
 		return s.cfg.SetLabel(body.ID, body.Label)
+	})
+}
+
+func (s *Server) handleCodecs(wri http.ResponseWriter, req *http.Request) {
+	mutate(s, wri, req, func(body struct {
+		idBody
+		Codecs []string `json:"codecs"`
+	},
+	) error {
+		if err := s.cfg.SetCodecs(body.ID, body.Codecs); err != nil {
+			return err
+		}
+
+		// A codec change only takes effect on the next connection, so drop the
+		// current publisher rather than leaving the old set running behind a UI
+		// that says otherwise.
+		s.revoke(body.ID)
+
+		return nil
 	})
 }
 
