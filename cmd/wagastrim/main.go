@@ -9,11 +9,13 @@ import (
 	"context"
 	"flag"
 	"os"
-	"os/signal"
+	signalpkg "os/signal"
 	"runtime"
 	"syscall"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
+	"github.com/MarcFryd/wagaStrim/internal/ingest"
+	"github.com/MarcFryd/wagaStrim/internal/signal"
 	"github.com/MarcFryd/wagaStrim/internal/tray"
 	"github.com/MarcFryd/wagaStrim/internal/ui"
 	"github.com/pion/logging"
@@ -49,12 +51,35 @@ func run(headless bool, log logging.LeveledLogger) error {
 		return err
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	engine, mux, err := ingest.NewSettingEngine(cfg.MediaPort)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if closeErr := mux.Close(); closeErr != nil {
+			log.Warnf("close media mux: %v", closeErr)
+		}
+	}()
+
+	whip, err := ingest.NewServer(cfg, log, engine)
+	if err != nil {
+		return err
+	}
+
+	defer whip.Close()
+
+	public := signal.New(cfg, log, whip)
+
+	ctx, stop := signalpkg.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	errs := make(chan error, 1)
+	errs := make(chan error, 2)
 
 	go func() { errs <- srv.Serve(ctx) }()
+	go func() { errs <- public.Serve(ctx) }()
+
+	log.Infof("media on udp/%d, forward it along with tcp/%d", cfg.MediaPort, cfg.SignalPort)
 
 	if headless {
 		log.Infof("headless; open %s", srv.Addr())
