@@ -14,12 +14,24 @@ that works and is boring.
 The reason to choose this over BELABOX or a cloud ingest is that it is small enough to read in an
 afternoon. Every addition spends that budget.
 
-- Keep it small enough to read in an afternoon. The working number is 3500 lines of **production**
-  Go, revised up from 2000 once the buffer and both signaling paths were written rather than
-  estimated. Tests are excluded and always were, which the earlier wording failed to say: nobody
-  reads the tests to understand the system, and a budget that counts them is a budget that argues
-  against testing. Report the count in any PR that moves it more than 200 lines, and say so plainly
-  if a phase pushes past the number instead of quietly redefining it again.
+- Keep it small enough to read in an afternoon. There is no line limit, because a number that gets
+  revised whenever it is inconvenient is paperwork rather than a constraint. The discipline is not
+  relaxed by dropping it; it moves into the rules below, which are the things that actually keep a
+  codebase small. Report the production count in any PR that moves it more than 200 lines, so
+  growth stays visible.
+- Every phase pays for its lines in capability. Adding a lot of code and no new behavior is the
+  signal to re-read that code. Growth that buys something is fine at any size.
+- Before writing a new function, look for the one that already does it. Three of the four
+  duplications removed so far were byte-identical copies written weeks apart, each because nobody
+  checked the other package first.
+- Delete on the way past. An export with no caller, a field that is never read, a counter that is
+  never incremented, a helper that only forwards: remove it in the change that revealed it rather
+  than filing it.
+- Optimization is not a later phase. The relay touches every packet, so per-packet work and
+  allocation rate are design constraints, not tuning: no payload parsing outside the one keyframe
+  function, no allocation in a read loop that a pooled buffer avoids, no polling where a signal
+  works, and genuinely idle when nothing is streaming. Claims still need a benchmark or a pprof
+  profile in the PR; what does not need proof is the choice to keep the hot path short.
 - Pion, a tray library, and `testify` in tests are the entire dependency budget. It has already
   been spent. Adding a fourth needs a line in the PR saying what it replaced and why writing it
   ourselves was worse.
