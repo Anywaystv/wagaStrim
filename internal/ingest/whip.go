@@ -196,7 +196,7 @@ func offerSendsMedia(desc webrtc.SessionDescription) error {
 	return ErrNotSending
 }
 
-func (s *Server) negotiate(ing *config.Ingest, desc webrtc.SessionDescription) (string, string, error) {
+func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (string, string, error) {
 	s.mu.Lock()
 	_, live := s.byIngest[ing.ID]
 	s.mu.Unlock()
@@ -289,7 +289,7 @@ func (s *Server) exchange(peer *webrtc.PeerConnection, desc webrtc.SessionDescri
 
 // drain forwards the track into the relay and counts bytes. Packets are passed
 // through untouched: no depacketising, no re-encoding, no timestamp rewriting.
-func (s *Server) drain(ing *config.Ingest, session *Session, peer *webrtc.PeerConnection, track *webrtc.TrackRemote) {
+func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	s.log.Infof("ingest %s: track %s %s", ing.Label, track.Kind(), track.Codec().MimeType)
 
 	askKeyframe := func() { s.requestKeyframe(peer, track.SSRC()) }

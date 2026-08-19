@@ -12,7 +12,10 @@ import (
 
 // window is how far back the bitrate average reaches. Long enough that a single
 // slow frame does not swing it, short enough to notice a link degrading.
-const window = 5 * time.Second
+const (
+	window      = 5 * time.Second
+	sampleEvery = 250 * time.Millisecond
+)
 
 // Snapshot is what the UI renders for one ingest.
 type Snapshot struct {
@@ -37,6 +40,11 @@ type counter struct {
 	live    bool
 	late    uint64
 	dropped uint64
+
+	// Advice is driven by recent movement, not the lifetime total. A single late
+	// packet an hour ago must not pin "raise the delay" on screen forever.
+	lastMoved time.Time
+	prevBad   uint64
 }
 
 // Registry holds one counter per ingest.
@@ -81,9 +89,25 @@ func (r *Registry) Observe(ingestID string, total, late, dropped uint64) {
 	}
 
 	now := time.Now()
+
+	// Sampling every packet buys no accuracy over a five second average and
+	// churns the slice thousands of times a second.
+	if len(entry.samples) > 0 && now.Sub(entry.samples[len(entry.samples)-1].at) < sampleEvery {
+		entry.total = total
+		entry.late = late
+		entry.dropped = dropped
+
+		return
+	}
+
 	entry.total = total
 	entry.late = late
 	entry.dropped = dropped
+
+	if bad := late + dropped; bad > entry.prevBad {
+		entry.prevBad = bad
+		entry.lastMoved = now
+	}
 	entry.samples = append(entry.samples, sample{at: now, bytes: total})
 
 	cutoff := now.Add(-window)
@@ -113,7 +137,7 @@ func (r *Registry) Of(ingestID string) Snapshot {
 		snap.Since = int(time.Since(entry.started).Seconds())
 	}
 
-	snap.Advice = advise(snap)
+	snap.Advice = advise(snap, time.Since(entry.lastMoved) < adviceWindow, entry.dropped > 0)
 
 	return snap
 }
@@ -135,17 +159,19 @@ func bitrate(samples []sample) int {
 	return int(float64(last.bytes-first.bytes) * 8 / seconds / 1000)
 }
 
+// adviceWindow is how long after the last bad packet the advice stays up. Long
+// enough to read, short enough that a stream which recovered stops nagging.
+const adviceWindow = 30 * time.Second
+
 // advise turns the counters into the sentence the UI shows. Numbers alone make
 // a streamer guess; the point of collecting them is to say what to do.
-func advise(snap Snapshot) string {
+func advise(snap Snapshot, recent, skipping bool) string {
 	switch {
-	case !snap.Live:
+	case !snap.Live, !recent:
 		return ""
-	case snap.Dropped > 0:
+	case skipping:
 		return "Skipping to keyframes to keep up. Raise the delay for this camera."
-	case snap.Late > 0:
-		return "Packets are arriving after their slot. Raise the delay for this camera."
 	default:
-		return ""
+		return "Packets are arriving after their slot. Raise the delay for this camera."
 	}
 }
