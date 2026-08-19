@@ -28,7 +28,7 @@ var ErrOpenBrowser = errors.New("cannot open browser")
 func Run(ctx context.Context, uiAddr string, log logging.LeveledLogger, stop context.CancelFunc) {
 	onReady := func() {
 		systray.SetTitle("wagaStrim")
-		systray.SetTooltip("wagaStrim — " + uiAddr)
+		systray.SetTooltip("wagaStrim at " + uiAddr)
 
 		open := systray.AddMenuItem("Open settings", uiAddr)
 		systray.AddSeparator()
