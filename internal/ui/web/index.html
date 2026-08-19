@@ -10,9 +10,13 @@
   </span>
 </header>
 <main>
-  <p class="notice">
-    Phase 1 skeleton. Links are issued and stored, but nothing is listening for media yet.
-  </p>
+  <section class="card">
+    <div class="row between">
+      <h2>Reachability</h2>
+      <button class="button" id="check">Check</button>
+    </div>
+    <p class="muted" id="reach">Not checked yet.</p>
+  </section>
 
   {{if not .Ingests}}
     <div class="card empty">No cameras yet. Add one to get a link pair.</div>
@@ -23,10 +27,13 @@
     <div class="row between">
       <h2>{{.Label}}</h2>
       <span class="row">
+        <span class="status-button" data-status>idle</span>
         {{range .Codecs}}<span class="pill">{{.}}</span>{{end}}
         <button class="button quiet" data-remove="{{.ID}}">Remove</button>
       </span>
     </div>
+
+    <p class="muted" data-stats>Waiting for a publisher.</p>
 
     <div class="field">
       <label>Sender — paste into Moblin</label>

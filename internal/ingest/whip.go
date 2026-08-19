@@ -14,6 +14,7 @@ import (
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
 	"github.com/MarcFryd/wagaStrim/internal/relay"
+	"github.com/MarcFryd/wagaStrim/internal/stats"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/nack"
 	"github.com/pion/logging"
@@ -57,6 +58,7 @@ type Server struct {
 	log   logging.LeveledLogger
 	api   *webrtc.API
 	relay *relay.Relay
+	stats *stats.Registry
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -69,6 +71,7 @@ func NewServer(
 	log logging.LeveledLogger,
 	engine *webrtc.SettingEngine,
 	hub *relay.Relay,
+	counters *stats.Registry,
 ) (*Server, error) {
 	media := &webrtc.MediaEngine{}
 	if err := registerCodecs(media); err != nil {
@@ -100,6 +103,7 @@ func NewServer(
 		cfg:   cfg,
 		log:   log,
 		relay: hub,
+		stats: counters,
 		api: webrtc.NewAPI(
 			webrtc.WithMediaEngine(media),
 			webrtc.WithInterceptorRegistry(registry),
@@ -219,7 +223,12 @@ func (s *Server) negotiate(ing *config.Ingest, desc webrtc.SessionDescription) (
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		s.log.Infof("ingest %s: %s", ing.Label, state)
 
+		if state == webrtc.PeerConnectionStateConnected {
+			s.stats.Publishing(ing.ID)
+		}
+
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+			s.stats.Stopped(ing.ID)
 			s.relay.Drop(ing.ID)
 			s.forget(session.Resource)
 		}
@@ -314,6 +323,11 @@ func (s *Server) drain(ing *config.Ingest, session *Session, peer *webrtc.PeerCo
 
 		session.add(pkt.MarshalSize())
 		buf.Push(pkt)
+
+		if track.Kind() == webrtc.RTPCodecTypeVideo {
+			late, dropped := buf.Stats()
+			s.stats.Observe(ing.ID, session.Bytes(), late, dropped)
+		}
 	}
 }
 
