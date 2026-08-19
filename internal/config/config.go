@@ -19,20 +19,30 @@ import (
 // seconds of buffered media is what keeps OBS fed through a tunnel or a tower
 // handoff. A value below it is clamped rather than honored, and the file is
 // never trusted to stay inside the range.
+//
+// DelayHardFloorMS is the lowest a deployment may move that floor to. A phone on
+// a tower handoff needs the full two seconds and a person installing this on
+// their own PC never gets to go below it, but a camera on a wired LAN feeding a
+// machine in the same rack is a different problem, and holding it two seconds
+// behind is latency bought for a dropout that cannot happen there.
 const (
-	DelayFloorMS   = 2000
-	DelayDefaultMS = 2000
-	DelayMaxMS     = 10000
+	DelayFloorMS     = 2000
+	DelayDefaultMS   = 2000
+	DelayMaxMS       = 10000
+	DelayHardFloorMS = 100
 )
 
 // Version is the schema version written to new files.
 const Version = 1
 
 // Default ports. Media and signaling are forwarded; the UI never leaves loopback.
+// Control binds only where a deployment configured a token, and belongs behind a
+// firewall rule as well as behind that token.
 const (
-	DefaultMediaPort  = 7332
-	DefaultSignalPort = 7331
-	DefaultUIPort     = 7330
+	DefaultMediaPort   = 7332
+	DefaultSignalPort  = 7331
+	DefaultUIPort      = 7330
+	DefaultControlPort = 7333
 )
 
 // Codec identifiers as they appear in the config file and the UI.
@@ -60,13 +70,23 @@ type Ingest struct {
 
 // Config is the whole persisted state.
 type Config struct {
-	Version    int      `json:"version"`
-	PublicHost string   `json:"publicHost"`
-	MediaPort  int      `json:"mediaPort"`
-	SignalPort int      `json:"signalPort"`
-	UIPort     int      `json:"uiPort"`
-	Autostart  bool     `json:"autostart"`
-	Ingests    []Ingest `json:"ingests"`
+	Version    int    `json:"version"`
+	PublicHost string `json:"publicHost"`
+	MediaPort  int    `json:"mediaPort"`
+	SignalPort int    `json:"signalPort"`
+	UIPort     int    `json:"uiPort"`
+	Autostart  bool   `json:"autostart"`
+
+	// ControlToken turns the control listener on. Empty means a deployment owns
+	// nothing here and the listener never binds, which is every desktop install.
+	ControlToken string `json:"controlToken,omitempty"`
+	ControlPort  int    `json:"controlPort,omitempty"`
+
+	// FloorMS lowers the playout floor for a deployment whose cameras are not on
+	// cellular. Absent means DelayFloorMS, which is what a person installing this
+	// on their own machine always gets.
+	FloorMS int      `json:"delayFloorMs,omitempty"`
+	Ingests []Ingest `json:"ingests"`
 
 	// The settings page mutates this while the public signaling listener reads
 	// it, on separate listeners and separate goroutines.
@@ -172,22 +192,44 @@ func (c *Config) normalise() {
 		c.UIPort = DefaultUIPort
 	}
 
+	if c.ControlPort == 0 {
+		c.ControlPort = DefaultControlPort
+	}
+
+	c.FloorMS = clampFloor(c.FloorMS)
+
 	for idx := range c.Ingests {
 		ing := &c.Ingests[idx]
-		ing.DelayMS = clampDelay(ing.DelayMS)
+		ing.DelayMS = c.clampDelay(ing.DelayMS)
 
-		if len(ing.Codecs) == 0 {
-			ing.Codecs = []string{CodecH264}
-		}
+		ing.Codecs = keepCodecs(ing.Codecs)
+	}
+}
+
+// clampFloor holds the configured floor inside the range a deployment may pick.
+// Zero means the file said nothing, which is the two second product floor.
+func clampFloor(floorMS int) int {
+	switch {
+	case floorMS == 0:
+		return DelayFloorMS
+	case floorMS < DelayHardFloorMS:
+		return DelayHardFloorMS
+	case floorMS > DelayMaxMS:
+		return DelayMaxMS
+	default:
+		return floorMS
 	}
 }
 
 // clampDelay holds a playout target inside the permitted range. The floor is the
-// product, not a preference, so it is applied on every path that can set a delay.
-func clampDelay(delayMS int) int {
+// product, not a preference, so it is applied on every path that can set a delay
+// rather than trusting a caller to have applied it already.
+func (c *Config) clampDelay(delayMS int) int {
+	floor := clampFloor(c.FloorMS)
+
 	switch {
-	case delayMS < DelayFloorMS:
-		return DelayFloorMS
+	case delayMS < floor:
+		return floor
 	case delayMS > DelayMaxMS:
 		return DelayMaxMS
 	default:
@@ -253,10 +295,111 @@ func (c *Config) AddIngest(label string) (Ingest, error) {
 		SenderKey:   senderKey,
 		ReceiverKey: receiverKey,
 		Codecs:      []string{CodecH264},
-		DelayMS:     DelayDefaultMS,
+		DelayMS:     c.clampDelay(DelayDefaultMS),
 	})
 
 	return c.Ingests[len(c.Ingests)-1], c.saveLocked()
+}
+
+// ReplaceIngests sets the whole list from a deployment that owns it elsewhere.
+// A compositor box is cattle: it is deleted and recreated on an idle timer, and
+// a key minted here would hand the streamer a new push URL every time. The
+// dashboard keeps the list and pushes it, so a replaced machine comes back with
+// the same links.
+//
+// The returned identifiers are the cameras whose live sessions can no longer be
+// trusted, either because the camera is gone or because its keys or codecs
+// moved under it. The caller closes those, exactly as removing one from the
+// settings page does.
+func (c *Config) ReplaceIngests(next []Ingest) ([]string, error) {
+	if err := validateIngests(next); err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	stale := staleIngests(c.Ingests, next)
+	replacement := make([]Ingest, len(next))
+
+	for idx := range next {
+		ing := next[idx]
+		ing.Codecs = keepCodecs(ing.Codecs)
+		ing.DelayMS = c.clampDelay(ing.DelayMS)
+		replacement[idx] = ing
+	}
+
+	c.Ingests = replacement
+
+	return stale, c.saveLocked()
+}
+
+// validateIngests rejects a list that could not be resolved unambiguously.
+func validateIngests(list []Ingest) error {
+	seen := make(map[string]struct{}, len(list)*3)
+
+	for idx := range list {
+		ing := list[idx]
+
+		if ing.ID == "" {
+			return fmt.Errorf("%w: position %d", ErrBadIngest, idx)
+		}
+
+		if _, repeated := seen[ing.ID]; repeated {
+			return fmt.Errorf("%w: %s", ErrBadIngest, ing.ID)
+		}
+
+		seen[ing.ID] = struct{}{}
+
+		if !validKey(SenderPrefix, ing.SenderKey) || !validKey(ReceiverPrefix, ing.ReceiverKey) {
+			return fmt.Errorf("%w: on ingest %s", ErrBadKey, ing.ID)
+		}
+
+		for _, key := range []string{ing.SenderKey, ing.ReceiverKey} {
+			if _, repeated := seen[key]; repeated {
+				return fmt.Errorf("%w: on ingest %s", ErrDuplicateKey, ing.ID)
+			}
+
+			seen[key] = struct{}{}
+		}
+	}
+
+	return nil
+}
+
+// staleIngests names the cameras whose running session cannot survive the new
+// list. A publisher holding a key that no longer resolves would keep sending
+// into a camera nobody can subscribe to, and a codec change needs the
+// negotiation redone.
+func staleIngests(current, next []Ingest) []string {
+	stale := make([]string, 0, len(current))
+
+	for idx := range current {
+		was := current[idx]
+		found := false
+
+		for jdx := range next {
+			now := next[jdx]
+			if now.ID != was.ID {
+				continue
+			}
+
+			found = true
+
+			if now.SenderKey != was.SenderKey || now.ReceiverKey != was.ReceiverKey ||
+				!slices.Equal(keepCodecs(now.Codecs), was.Codecs) {
+				stale = append(stale, was.ID)
+			}
+
+			break
+		}
+
+		if !found {
+			stale = append(stale, was.ID)
+		}
+	}
+
+	return stale
 }
 
 // RemoveIngest drops a camera, revoking both of its keys.
@@ -373,6 +516,14 @@ func (c *Config) SetLabel(id, label string) error {
 // negotiate nothing, so H.264 is restored rather than leaving a dead camera:
 // every phone can send it, which makes it the only safe fallback.
 func (c *Config) SetCodecs(id string, codecs []string) error {
+	keep := keepCodecs(codecs)
+
+	return c.update(id, func(ing *Ingest) { ing.Codecs = keep })
+}
+
+// keepCodecs narrows a requested set to the codecs the relay can carry, in
+// preference order, and never returns an empty set.
+func keepCodecs(codecs []string) []string {
 	keep := make([]string, 0, len(codecs))
 
 	for _, name := range AllCodecs() {
@@ -385,12 +536,12 @@ func (c *Config) SetCodecs(id string, codecs []string) error {
 		keep = []string{CodecH264}
 	}
 
-	return c.update(id, func(ing *Ingest) { ing.Codecs = keep })
+	return keep
 }
 
 // SetDelay clamps to the permitted range and saves.
 func (c *Config) SetDelay(id string, delayMS int) error {
-	return c.update(id, func(ing *Ingest) { ing.DelayMS = clampDelay(delayMS) })
+	return c.update(id, func(ing *Ingest) { ing.DelayMS = c.clampDelay(delayMS) })
 }
 
 // Role says which half of an ingest a key belongs to.
@@ -438,6 +589,30 @@ func (c *Config) List() []Ingest {
 
 	out := make([]Ingest, len(c.Ingests))
 	copy(out, c.Ingests)
+
+	return out
+}
+
+// Floor is the lowest delay this deployment permits, which the settings page
+// needs to render a slider that cannot ask for a value it would clamp.
+func (c *Config) Floor() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return clampFloor(c.FloorMS)
+}
+
+// IngestIDs lists every camera identifier, which is what a stats reader needs
+// and the only part of the list it may see.
+func (c *Config) IngestIDs() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	out := make([]string, len(c.Ingests))
+
+	for idx := range c.Ingests {
+		out[idx] = c.Ingests[idx].ID
+	}
 
 	return out
 }

@@ -150,12 +150,45 @@ func TestRecvonlyOfferIsRefused(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotSending, "a WHEP client pointed here must be told so")
 }
 
-func TestSecondPublisherIsRejected(t *testing.T) {
+// A phone that loses its link is retrying long before ICE calls the old session
+// failed. Refusing it for that whole window is the reconnect a streamer notices.
+func TestAPublisherReplacesOneThatNeverConnected(t *testing.T) {
 	srv, ing := newTestServer(t)
 
 	first, _ := publisher(t)
-	_, _, err := srv.Publish(ing.SenderKey, offerFrom(t, first))
+	_, firstResource, err := srv.Publish(ing.SenderKey, offerFrom(t, first))
 	require.NoError(t, err)
+
+	second, _ := publisher(t)
+	_, secondResource, err := srv.Publish(ing.SenderKey, offerFrom(t, second))
+	require.NoError(t, err, "a session that is not carrying media must not lock the camera")
+
+	_, still := srv.session(firstResource)
+	assert.False(t, still, "the replaced session must be gone, not merely shadowed")
+	assert.NotEqual(t, firstResource, secondResource)
+}
+
+// The other half: two cameras pointed at one ingest is a mistake, and the one
+// actually on air keeps it.
+func TestAConnectedPublisherIsNotDisplaced(t *testing.T) {
+	srv, ing := newTestServer(t)
+	peer, track := publisher(t)
+
+	answer, resource, err := srv.Publish(ing.SenderKey, offerFrom(t, peer))
+	require.NoError(t, err)
+	require.NoError(t, peer.SetRemoteDescription(
+		webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}))
+
+	session, ok := srv.session(resource)
+	require.True(t, ok)
+
+	frame := []byte{0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x01, 0x65, 0x88}
+
+	require.Eventually(t, func() bool {
+		_ = track.WriteSample(media(frame))
+
+		return session.Bytes() > 0
+	}, 15*time.Second, 50*time.Millisecond)
 
 	second, _ := publisher(t)
 	_, _, err = srv.Publish(ing.SenderKey, offerFrom(t, second))

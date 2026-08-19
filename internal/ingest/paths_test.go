@@ -65,3 +65,26 @@ func TestARealPublisherEstablishesPairs(t *testing.T) {
 	assert.Positive(t, snap.PathsLive, "at least the carrying pair must be reported as succeeded")
 	assert.GreaterOrEqual(t, snap.PathsTotal, snap.PathsLive)
 }
+
+func TestRoundTripComesFromTheNominatedPair(t *testing.T) {
+	report := webrtc.StatsReport{
+		"a": webrtc.ICECandidatePairStats{Nominated: false, CurrentRoundTripTime: 0.5},
+		"b": webrtc.ICECandidatePairStats{Nominated: true, CurrentRoundTripTime: 0.042},
+	}
+
+	assert.Equal(t, 42, roundTrip(report), "the pair carrying media is the one whose latency counts")
+	assert.Zero(t, roundTrip(webrtc.StatsReport{}), "nothing measured yet is not a round trip of zero milliseconds")
+}
+
+func TestPacketsLostSumsInboundStreams(t *testing.T) {
+	report := webrtc.StatsReport{
+		"video": webrtc.InboundRTPStreamStats{PacketsLost: 12},
+		"audio": webrtc.InboundRTPStreamStats{PacketsLost: 3},
+		// pion reports a negative count when more packets arrived than were
+		// expected, which duplicates from a bonded sender can do.
+		"odd":  webrtc.InboundRTPStreamStats{PacketsLost: -4},
+		"pair": webrtc.ICECandidatePairStats{},
+	}
+
+	assert.Equal(t, uint64(15), packetsLost(report))
+}

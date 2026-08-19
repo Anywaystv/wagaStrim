@@ -237,12 +237,8 @@ func (s *Server) Publish(key, offer string) (answer string, resource string, err
 }
 
 func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (string, string, error) {
-	s.mu.Lock()
-	_, live := s.byIngest[ing.ID]
-	s.mu.Unlock()
-
-	if live {
-		return "", "", fmt.Errorf("%w: %s", ErrAlreadyLive, ing.Label)
+	if err := s.clearPrevious(ing); err != nil {
+		return "", "", err
 	}
 
 	// The camera's own codec set, not the server's. A toggle only means anything
@@ -286,6 +282,37 @@ func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (s
 	s.mu.Unlock()
 
 	return answer, resource, nil
+}
+
+// clearPrevious makes room for a publisher on an ingest that already has one.
+//
+// A phone that loses its link does not tell us; ICE takes tens of seconds to
+// call the old session failed, and the phone is retrying long before that. A
+// flat refusal for that whole window is the reconnect a streamer notices, so a
+// session that is no longer connected is ended here and the new offer proceeds.
+// A session that is genuinely still carrying media is not: two publishers on one
+// camera would fight over it, and the second one is a mistake worth naming.
+func (s *Server) clearPrevious(ing config.Ingest) error {
+	s.mu.Lock()
+	resource, live := s.byIngest[ing.ID]
+	session, known := s.sessions[resource]
+	s.mu.Unlock()
+
+	if !live || !known {
+		return nil
+	}
+
+	if session.peer.ConnectionState() == webrtc.PeerConnectionStateConnected {
+		return fmt.Errorf("%w: %s", ErrAlreadyLive, ing.Label)
+	}
+
+	s.log.Infof("ingest %s: replacing a publisher that is %s", ing.Label, session.peer.ConnectionState())
+
+	if err := s.Teardown(resource); err != nil {
+		return fmt.Errorf("%w: %w", ErrAlreadyLive, err)
+	}
+
+	return nil
 }
 
 // drain forwards the track into the relay and counts bytes. Packets are passed

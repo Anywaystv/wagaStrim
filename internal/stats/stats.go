@@ -28,6 +28,11 @@ type Snapshot struct {
 	Path     string `json:"path,omitempty"`
 	Switches int    `json:"switches"`
 
+	// RTT on the nominated pair, and packets the receiver never got. Both come
+	// from the report the pair count is already reading.
+	RTT  int    `json:"rttMs,omitempty"`
+	Lost uint64 `json:"packetsLost"`
+
 	// How many candidate pairs succeeded, out of how many exist. Not how much
 	// each carried: pion credits every received packet to the selected pair, so
 	// per-path traffic cannot be measured. See internal/ingest/paths.go.
@@ -51,6 +56,8 @@ type counter struct {
 	// stream simply keeps working, which looks identical to nothing happening.
 	switches int
 
+	rtt     int
+	lost    uint64
 	total   uint64
 	started time.Time
 	live    bool
@@ -139,6 +146,18 @@ func (r *Registry) Pairs(ingestID string, live, total int) {
 	}
 }
 
+// Link records what the ICE and RTP reports say about the path itself, as
+// opposed to what the buffer says about the media on it.
+func (r *Registry) Link(ingestID string, rttMS int, lost uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if entry, ok := r.counters[ingestID]; ok {
+		entry.rtt = rttMS
+		entry.lost = lost
+	}
+}
+
 // Observe records bytes arriving and the buffer's own counters.
 func (r *Registry) Observe(ingestID string, total, late, dropped uint64) {
 	r.mu.Lock()
@@ -177,6 +196,18 @@ func (r *Registry) Observe(ingestID string, total, late, dropped uint64) {
 	}
 }
 
+// Report returns one snapshot per camera, which is what both the settings page
+// and a deployment watching from another machine ask for.
+func (r *Registry) Report(ingestIDs []string) map[string]Snapshot {
+	out := make(map[string]Snapshot, len(ingestIDs))
+
+	for _, id := range ingestIDs {
+		out[id] = r.Of(id)
+	}
+
+	return out
+}
+
 // Of returns the current view of one ingest.
 func (r *Registry) Of(ingestID string) Snapshot {
 	r.mu.Lock()
@@ -189,9 +220,11 @@ func (r *Registry) Of(ingestID string) Snapshot {
 
 	snap := Snapshot{
 		Live:       entry.live,
-		Bitrate:    bitrate(entry.samples),
+		Bitrate:    bitrate(entry.samples, time.Now()),
 		Late:       entry.late,
 		Dropped:    entry.dropped,
+		RTT:        entry.rtt,
+		Lost:       entry.lost,
 		Path:       entry.path,
 		Switches:   entry.switches,
 		PathsLive:  entry.pathsLive,
@@ -209,12 +242,20 @@ func (r *Registry) Of(ingestID string) Snapshot {
 
 // bitrate averages across the window rather than between the last two samples,
 // which would swing wildly on a variable-bitrate encoder.
-func bitrate(samples []sample) int {
+func bitrate(samples []sample, now time.Time) int {
 	if len(samples) < 2 {
 		return 0
 	}
 
 	first, last := samples[0], samples[len(samples)-1]
+
+	// A publisher whose media stopped while its ICE connection stayed up would
+	// otherwise report its last rate forever. Live with no bitrate is precisely
+	// how a watcher tells a dead camera from a working one, so the window has to
+	// close on wall clock rather than only on the next packet.
+	if now.Sub(last.at) > window {
+		return 0
+	}
 
 	seconds := last.at.Sub(first.at).Seconds()
 	if seconds <= 0 {

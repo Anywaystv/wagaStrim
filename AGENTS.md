@@ -48,8 +48,13 @@ afternoon. Every addition spends that budget.
 - Ingests are addressed by stream key on the shared UDP media port. Never allocate a port per
   ingest. That turns "forward two ports" into "forward one per camera", which breaks the setup
   story the product is built around.
-- The 2000 ms delay floor is not a default, it is a floor. Do not add a flag, an "advanced" toggle,
-  or an env var that lets someone go below it. Clamp on config load rather than trusting the file.
+- The 2000 ms delay floor is not a default, it is a floor, and the desktop build never offers a way
+  under it: no flag, no "advanced" toggle, no env var. Clamp on config load rather than trusting the
+  file. What the floor is protecting is a phone on cellular losing its link for a second or two at a
+  time, so a deployment whose camera and player sit on one machine has a different worst case and
+  may lower it through `delayFloorMs`, down to a hard bound of 100 ms below which a buffer cannot
+  reorder anything. That is a deployment setting, written by whatever provisioned the machine, and
+  it never appears in the settings page a person uses.
 - No abstraction with one implementation. No interface until there are two callers. The one
   standing exception is `internal/autostart`, which is genuinely three implementations of one
   contract, one file per platform.

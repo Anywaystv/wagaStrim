@@ -323,3 +323,17 @@ func TestBondedSkewIsAbsorbed(t *testing.T) {
 			"a packet from the slower bonded path must still sort into place")
 	}
 }
+
+// A compositor box runs the buffer far below the IRL floor. The old fixed
+// margin was several times such a target, so drift there would never have been
+// corrected at all.
+func TestCorrectionMarginFollowsTheTarget(t *testing.T) {
+	assert.Equal(t, hysteresis, correctionMargin(2*time.Second),
+		"at the product floor the wide margin is what absorbs a recovery burst")
+	assert.Equal(t, hysteresis, correctionMargin(8*time.Second),
+		"a deeper buffer does not need a deeper margin than the burst it protects")
+	assert.Equal(t, 300*time.Millisecond, correctionMargin(300*time.Millisecond),
+		"a low target corrects at twice its depth rather than never")
+	assert.Equal(t, minMargin, correctionMargin(20*time.Millisecond),
+		"below the floor of the margin, jitter alone would trigger a skip")
+}

@@ -105,6 +105,33 @@ be publicly reachable or the phone cannot connect at all. Keeping them on separa
 what lets the UI be unauthenticated and the signaling be key-gated, and it stops a future change
 from accidentally exposing the settings page to the internet.
 
+## Deployments that own the ingest list
+
+The desktop product is one person, one machine, one settings page. A second shape exists: a server
+somewhere else provisions a machine, generates the keys, and treats this daemon as the media half
+of something larger. `afk-stream` is the first of those, running one box per streamer that renders
+a scene and encodes it, with the camera arriving here.
+
+That shape needs three things the desktop one does not, and nothing else:
+
+- **The keys arrive from outside.** Boxes are deleted and recreated on an idle timer, and a key
+  minted here would hand the streamer a new push URL every time. `PUT /control/ingests` replaces
+  the whole list with the document the owner holds, so a replaced machine converges by replaying
+  it. Sessions whose keys or codecs moved are closed; a replay that changes nothing closes nothing.
+- **Stats are read from another machine.** `GET /control/stats` is the map the settings page
+  already renders, on a listener something other than a browser on this machine can reach.
+- **A floor that suits the deployment.** See Delay above.
+
+Both routes live on their own port, off unless `controlToken` is set, and every request is compared
+against that token in constant time. It is deliberately not the signaling port, which has to be
+open to the internet for WHIP: an admin surface there would be gated by the token alone, while a
+separate port can also be scoped by a firewall to the one address allowed to call it. Failures
+return the same 404 as an unknown route, so the port is not an oracle either. The settings page
+stays on loopback and gains nothing.
+
+A container image ships for this, static and headless, with the config directory as a volume. The
+desktop install is still a binary and a tray icon.
+
 ## Stack
 
 One Go binary. Pion for WebRTC, a tray icon, and a UI served on loopback from `embed.FS`. No
@@ -158,15 +185,22 @@ So AV1 is selectable but an iPhone will never pick it, and H.265 may negotiate f
 render black if the flag test fails. Both cases have to be stated next to the toggle at the moment
 of choosing. A codec that cannot survive the whole path is not a codec option, it is a trap.
 
-**Delay** is a playout buffer between ingest and egress. **Floor 2000 ms, hard.** Default 2000,
-maximum 10000. The slider does not go below the floor and the config file is clamped on load, not
-trusted.
+**Delay** is a playout buffer between ingest and egress. **Floor 2000 ms.** Default 2000, maximum
+10000. The slider does not go below the floor and the config file is clamped on load, not trusted.
 
 The floor is the whole point of the product, not a tuning preference. A phone on cellular loses
 the link for a second or two constantly, whether a lift, an underpass, or a tower handoff. With two seconds
 already buffered, OBS keeps being fed the entire time and the viewer sees nothing. Without it the
 stream freezes on every dropout. A streamer who drags the slider to zero chasing latency has
 turned off the reason they installed this.
+
+The floor is what that case needs, not a constant of nature, and it is stated as a deployment
+setting rather than a number in the code so it stays honest. `delayFloorMs` lowers it for a machine
+whose camera reaches it over a LAN and whose player is the same box, where the dropout the floor
+buys resilience against cannot happen and two seconds is latency spent on nothing. The hard bound is
+100 ms, since below one frame interval a buffer has nothing to reorder, and the settings page never
+shows the knob: it is written by whatever provisioned the machine. Drift correction follows the
+target rather than a fixed two second margin, or a low target would never be corrected at all.
 
 **The buffer only recovers packets if the NACK history is as deep as the buffer.** Pion's defaults
 are not:

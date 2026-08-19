@@ -45,7 +45,22 @@ type Buffer struct {
 // hysteresis is deliberately wide. A link recovering from a dropout delivers a
 // burst, and a narrow margin would read that as drift and skip a keyframe at the
 // exact moment the picture came back.
-const hysteresis = 2 * time.Second
+//
+// minMargin keeps that reasoning from swallowing a low target whole. A
+// deployment running at a few hundred milliseconds has no cellular burst to
+// absorb, and two seconds of slack there is several times the target, so drift
+// would never be corrected at all.
+const (
+	hysteresis = 2 * time.Second
+	minMargin  = 250 * time.Millisecond
+)
+
+// correctionMargin is how far past its target a buffer may drift before it
+// skips. It follows the target rather than being a constant, because what counts
+// as drift at two seconds is the whole buffer at three hundred milliseconds.
+func correctionMargin(target time.Duration) time.Duration {
+	return min(hysteresis, max(target, minMargin))
+}
 
 // NewBuffer builds a buffer for one track.
 func NewBuffer(target time.Duration, clockRate uint32, mime string, keyframe func()) *Buffer {
@@ -195,7 +210,7 @@ func (b *Buffer) depthLocked() time.Duration {
 func (b *Buffer) Correct() bool {
 	b.mu.Lock()
 
-	if b.catchUp || b.depthLocked() <= b.target+hysteresis {
+	if b.catchUp || b.depthLocked() <= b.target+correctionMargin(b.target) {
 		b.mu.Unlock()
 
 		return false

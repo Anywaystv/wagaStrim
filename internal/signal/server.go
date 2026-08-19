@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -19,13 +18,11 @@ import (
 	"github.com/MarcFryd/wagaStrim/internal/config"
 	"github.com/MarcFryd/wagaStrim/internal/egress"
 	"github.com/MarcFryd/wagaStrim/internal/ingest"
+	"github.com/MarcFryd/wagaStrim/internal/listen"
 	"github.com/pion/logging"
 )
 
-const (
-	shutdownGrace = 5 * time.Second
-	maxOfferBytes = 256 << 10
-)
+const maxOfferBytes = 256 << 10
 
 // Server routes WHIP over HTTP to the ingest package.
 type Server struct {
@@ -65,32 +62,7 @@ func New(cfg *config.Config, log logging.LeveledLogger, whip *ingest.Server, whe
 
 // Serve blocks until the context is canceled.
 func (s *Server) Serve(ctx context.Context) error {
-	var lcfg net.ListenConfig
-
-	listener, err := lcfg.Listen(ctx, "tcp", s.listen)
-	if err != nil {
-		return fmt.Errorf("%w: signaling on %s: %w", ErrServe, s.listen, err)
-	}
-
-	errs := make(chan error, 1)
-
-	go func() { errs <- s.http.Serve(listener) }()
-
-	s.log.Infof("signaling on %s", listener.Addr())
-
-	select {
-	case err := <-errs:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-
-		return fmt.Errorf("%w: %w", ErrServe, err)
-	case <-ctx.Done():
-		stop, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownGrace)
-		defer cancel()
-
-		return s.http.Shutdown(stop)
-	}
+	return listen.Serve(ctx, s.log, s.http, s.listen, "signaling")
 }
 
 // negotiate reads an offer, hands it to whichever endpoint owns it, and writes
