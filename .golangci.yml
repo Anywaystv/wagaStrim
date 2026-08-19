@@ -78,6 +78,8 @@ linters:
     - wrapcheck        # Checks that errors returned from external packages are wrapped
     - wsl              # Whitespace Linter - Forces you to use empty lines!
   settings:
+    dupl:
+      threshold: 40
     staticcheck:
       checks:
         - all
@@ -138,6 +140,7 @@ linters:
         path: (examples|main\.go)
       - linters:
           - gocognit
+          - dupl
         path: _test\.go
       - linters:
           - forbidigo
