@@ -21,7 +21,8 @@ const correctionInterval = time.Second
 type Stream struct {
 	mu sync.RWMutex
 
-	tracks map[webrtc.RTPCodecType]*webrtc.TrackLocalStaticRTP
+	tracks  map[webrtc.RTPCodecType]*webrtc.TrackLocalStaticRTP
+	buffers []*Buffer
 
 	// keyframe asks the publisher for an IDR. A subscriber joining mid-stream
 	// otherwise shows nothing until the encoder happens to emit one, which on a
@@ -107,6 +108,42 @@ func (r *Relay) Subscribe(ingestID string) ([]*webrtc.TrackLocalStaticRTP, error
 	}
 
 	return tracks, nil
+}
+
+// Track registers a running buffer so a delay change can reach it. A camera in a
+// sync group is retargeted when any member's delay moves, not only its own.
+func (r *Relay) Track(ingestID string, buf *Buffer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	stream, ok := r.streams[ingestID]
+	if !ok {
+		return
+	}
+
+	stream.mu.Lock()
+	stream.buffers = append(stream.buffers, buf)
+	stream.mu.Unlock()
+}
+
+// Retarget moves every running buffer of one ingest to a new playout target.
+func (r *Relay) Retarget(ingestID string, target time.Duration) {
+	r.mu.RLock()
+	stream, ok := r.streams[ingestID]
+	r.mu.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	stream.mu.RLock()
+	buffers := make([]*Buffer, len(stream.buffers))
+	copy(buffers, stream.buffers)
+	stream.mu.RUnlock()
+
+	for _, buf := range buffers {
+		buf.SetTarget(target)
+	}
 }
 
 // Live reports whether an ingest currently has a publisher.

@@ -60,12 +60,30 @@ document.addEventListener("input", (ev) => {
 
 document.addEventListener("change", (ev) => {
   const slider = ev.target.closest("[data-delay]");
-  if (!slider) return;
+  if (slider) {
+    post("/api/ingests/delay", {
+      id: slider.getAttribute("data-delay"),
+      delayMs: Number(slider.value),
+    }).catch(() => {});
+    return;
+  }
 
-  post("/api/ingests/delay", {
-    id: slider.getAttribute("data-delay"),
-    delayMs: Number(slider.value),
-  }).catch(() => {});
+  const group = ev.target.closest("[data-group]");
+  if (group) {
+    post("/api/ingests/group", {
+      id: group.getAttribute("data-group"),
+      group: group.value.trim(),
+    }).catch(() => {});
+    return;
+  }
+
+  const label = ev.target.closest("[data-label]");
+  if (label) {
+    post("/api/ingests/label", {
+      id: label.getAttribute("data-label"),
+      label: label.value.trim() || "Camera",
+    }).catch(() => {});
+  }
 });
 
 // Poll rather than stream: one small request a second costs less than holding a
@@ -96,6 +114,14 @@ async function poll() {
 
     line.textContent = parts.join("  ·  ") + (snap.advice ? "  —  " + snap.advice : "");
   }
+
+  // Aggregate, because what limits a multi-camera setup is the total, not any
+  // one stream. No invented capacity model: the number is shown, not judged.
+  const live = Object.values(all).filter((s) => s.live);
+  const total = live.reduce((sum, s) => sum + s.bitrateKbps, 0);
+  document.getElementById("total").textContent = live.length
+    ? `${live.length} streaming  ·  ${(total / 1000).toFixed(1)} Mbps total`
+    : "No cameras streaming.";
 }
 
 setInterval(() => poll().catch(() => {}), 1000);

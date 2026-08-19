@@ -191,6 +191,26 @@ func (s *Server) abort(peer *webrtc.PeerConnection, cause error) error {
 	return cause
 }
 
+// CloseIngest disconnects every subscriber of one camera.
+func (s *Server) CloseIngest(ingestID string) {
+	s.mu.Lock()
+	doomed := make([]*Session, 0, len(s.sessions))
+
+	for resource, session := range s.sessions {
+		if session.IngestID == ingestID {
+			doomed = append(doomed, session)
+			delete(s.sessions, resource)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, session := range doomed {
+		if err := session.peer.Close(); err != nil {
+			s.log.Warnf("close subscriber: %v", err)
+		}
+	}
+}
+
 // Teardown ends a subscriber named by its WHEP resource id.
 func (s *Server) Teardown(resource string) error {
 	s.mu.Lock()

@@ -8,11 +8,16 @@ import (
 	"time"
 
 	"github.com/pion/rtp"
+	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 const testClock = 90000
+
+func videoCodec() webrtc.RTPCodecCapability {
+	return webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: testClock}
+}
 
 func packet(seq uint16, timestamp uint32, payload ...byte) *rtp.Packet {
 	return &rtp.Packet{
@@ -207,4 +212,30 @@ func TestLatePacketsAreCounted(t *testing.T) {
 
 	late, _ := buf.Stats()
 	assert.Equal(t, uint64(1), late, "a packet past its slot must be counted, not silently kept")
+}
+
+func TestRetargetReachesARunningBuffer(t *testing.T) {
+	hub := New()
+
+	track, err := hub.Publish("cam", webrtc.RTPCodecTypeVideo, videoCodec(), nil)
+	require.NoError(t, err)
+	require.NotNil(t, track)
+
+	buf := NewBuffer(5*time.Second, testClock, "video/H264", nil)
+	defer buf.Close()
+
+	hub.Track("cam", buf)
+	hub.Retarget("cam", 200*time.Millisecond)
+
+	start := time.Now()
+	buf.Push(packet(1, 0, idr()...))
+
+	_, ok := buf.Pop()
+	require.True(t, ok)
+	assert.Less(t, time.Since(start), 2*time.Second,
+		"a retarget must reach a buffer that is already running")
+}
+
+func TestRetargetIgnoresAnUnknownIngest(t *testing.T) {
+	assert.NotPanics(t, func() { New().Retarget("gone", time.Second) })
 }

@@ -229,6 +229,16 @@ func (b *Buffer) Stats() (late, dropped uint64) {
 	return b.late, b.dropped
 }
 
+// SetTarget changes the playout target of a running buffer. Clamping is the
+// caller's job; config does it on every path that can set one.
+func (b *Buffer) SetTarget(target time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.target = target
+	b.ready.Signal()
+}
+
 // Close releases any blocked reader once the queue is drained.
 func (b *Buffer) Close() {
 	b.mu.Lock()
