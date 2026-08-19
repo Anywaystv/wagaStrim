@@ -170,3 +170,45 @@ func TestSecondPublisherIsRejected(t *testing.T) {
 func media(frame []byte) pionmedia.Sample {
 	return pionmedia.Sample{Data: frame, Duration: 33 * time.Millisecond}
 }
+
+func TestDescribePairNamesTheRoute(t *testing.T) {
+	pair := func(typ webrtc.ICECandidateType, addr string) *webrtc.ICECandidatePair {
+		return &webrtc.ICECandidatePair{
+			Local:  &webrtc.ICECandidate{Address: "192.168.1.5"},
+			Remote: &webrtc.ICECandidate{Typ: typ, Address: addr, Protocol: webrtc.ICEProtocolUDP},
+		}
+	}
+
+	assert.Contains(t, describePair(pair(webrtc.ICECandidateTypeRelay, "1.2.3.4")), "relayed")
+	assert.Contains(t, describePair(pair(webrtc.ICECandidateTypeSrflx, "1.2.3.4")), "through NAT")
+	assert.Contains(t, describePair(pair(webrtc.ICECandidateTypeHost, "192.168.1.9")), "local network")
+	assert.Contains(t, describePair(pair(webrtc.ICECandidateTypeHost, "1.2.3.4")), "direct")
+	assert.Contains(t, describePair(pair(webrtc.ICECandidateTypeHost, "1.2.3.4")), "192.168.1.5")
+}
+
+// The path callback hangs off SCTP().Transport().ICETransport(), which has to
+// exist on a media-only connection with no data channel. If pion ever stops
+// creating it there, path reporting silently disappears rather than failing.
+func TestPathIsReportedOnAMediaOnlyConnection(t *testing.T) {
+	srv, ing := newTestServer(t)
+	peer, track := publisher(t)
+
+	answer, resource, err := srv.Publish(ing.SenderKey, offerFrom(t, peer))
+	require.NoError(t, err)
+	require.NoError(t, peer.SetRemoteDescription(
+		webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}))
+
+	session, ok := srv.Session(resource)
+	require.True(t, ok)
+
+	frame := []byte{0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x01, 0x65, 0x88}
+
+	require.Eventually(t, func() bool {
+		_ = track.WriteSample(media(frame))
+
+		return session.Bytes() > 0
+	}, 15*time.Second, 50*time.Millisecond)
+
+	assert.NotEmpty(t, srv.stats.Of(ing.ID).Path,
+		"a connected publisher must report the path carrying it")
+}

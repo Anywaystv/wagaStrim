@@ -87,3 +87,48 @@ func TestObserveIgnoresAnIngestThatIsNotPublishing(t *testing.T) {
 
 	assert.False(t, reg.Of("cam").Live, "observing must not resurrect a dead ingest")
 }
+
+// The first pair is the connection forming, not a re-home. Counting it would
+// report a network change on every stream that ever worked.
+func TestFirstPathIsNotASwitch(t *testing.T) {
+	reg := New()
+	reg.Publishing("cam")
+	reg.Path("cam", "direct over udp via 192.168.1.2")
+
+	assert.Zero(t, reg.Of("cam").Switches)
+	assert.Equal(t, "direct over udp via 192.168.1.2", reg.Of("cam").Path)
+}
+
+func TestRehomingCounts(t *testing.T) {
+	reg := New()
+	reg.Publishing("cam")
+	reg.Path("cam", "local network over udp via 192.168.1.2")
+	reg.Path("cam", "through NAT over udp via 192.168.1.2")
+
+	assert.Equal(t, 1, reg.Of("cam").Switches, "Wi-Fi to cellular is one change")
+	assert.Contains(t, reg.Of("cam").Path, "through NAT")
+}
+
+func TestRepeatingThePathIsNotAChange(t *testing.T) {
+	reg := New()
+	reg.Publishing("cam")
+
+	for range 5 {
+		reg.Path("cam", "direct over udp via 10.0.0.1")
+	}
+
+	assert.Zero(t, reg.Of("cam").Switches, "renomination re-confirming a pair is not a move")
+}
+
+// A phone that reconnects has still moved networks; losing the count would hide
+// exactly the flapping worth seeing.
+func TestSwitchCountSurvivesAReconnect(t *testing.T) {
+	reg := New()
+	reg.Publishing("cam")
+	reg.Path("cam", "a")
+	reg.Path("cam", "b")
+	reg.Stopped("cam")
+	reg.Publishing("cam")
+
+	assert.Equal(t, 1, reg.Of("cam").Switches)
+}

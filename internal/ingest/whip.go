@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -349,6 +350,8 @@ func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 		s.drain(ing, session, peer, track)
 	})
 
+	s.watchPath(ing, peer)
+
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		s.log.Infof("ingest %s: %s", ing.Label, state)
 
@@ -362,6 +365,60 @@ func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 		default:
 		}
 	})
+}
+
+// watchPath reports which candidate pair is carrying the stream. Renomination
+// moves a phone from Wi-Fi to cellular without a reconnect, and from outside
+// the process that is indistinguishable from nothing happening, so the move has
+// to be surfaced or the feature is invisible.
+func (s *Server) watchPath(ing config.Ingest, peer *webrtc.PeerConnection) {
+	transport := peer.SCTP().Transport().ICETransport()
+	if transport == nil {
+		return
+	}
+
+	transport.OnSelectedCandidatePairChange(func(pair *webrtc.ICECandidatePair) {
+		if pair == nil || pair.Local == nil || pair.Remote == nil {
+			return
+		}
+
+		path := describePair(pair)
+		s.log.Infof("ingest %s: now on %s", ing.Label, path)
+		s.stats.Path(ing.ID, path)
+	})
+}
+
+// describePair names a path in the terms a streamer thinks in. The candidate
+// type is what says whether traffic is going direct or through a relay, which
+// is the difference between working and working badly.
+func describePair(pair *webrtc.ICECandidatePair) string {
+	kind := "direct"
+
+	switch pair.Remote.Typ {
+	case webrtc.ICECandidateTypeRelay:
+		kind = "relayed"
+	case webrtc.ICECandidateTypeSrflx, webrtc.ICECandidateTypePrflx:
+		kind = "through NAT"
+	case webrtc.ICECandidateTypeHost:
+		if isPrivate(pair.Remote.Address) {
+			kind = "local network"
+		}
+	case webrtc.ICECandidateTypeUnknown:
+	}
+
+	return fmt.Sprintf("%s over %s via %s", kind, pair.Remote.Protocol, pair.Local.Address)
+}
+
+// isPrivate reports whether an address is on a local network rather than the
+// internet, so a phone on the same Wi-Fi is not described as a direct hit from
+// outside.
+func isPrivate(address string) bool {
+	addr, err := netip.ParseAddr(address)
+	if err != nil {
+		return false
+	}
+
+	return addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast()
 }
 
 // CloseIngest ends whatever is publishing to one camera. Deleting a camera has
