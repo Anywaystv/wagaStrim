@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
+	peerpkg "github.com/MarcFryd/wagaStrim/internal/peer"
 	"github.com/MarcFryd/wagaStrim/internal/relay"
 	"github.com/MarcFryd/wagaStrim/internal/stats"
 	"github.com/pion/interceptor"
@@ -169,31 +170,16 @@ func (s *Server) Publish(key, offer string) (answer string, resource string, err
 	}
 
 	desc := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offer}
-	if dirErr := offerSendsMedia(desc); dirErr != nil {
-		return "", "", dirErr
+	sends, dirErr := peerpkg.Direction(desc, "sendonly")
+	if dirErr != nil {
+		return "", "", fmt.Errorf("%w: %w", ErrBadOffer, dirErr)
+	}
+
+	if !sends {
+		return "", "", ErrNotSending
 	}
 
 	return s.negotiate(ing, desc)
-}
-
-// offerSendsMedia rejects an offer that only wants to receive. A WHEP client
-// pointed at this endpoint produces exactly that, and catching it here turns a
-// silent black source into a diagnosis.
-func offerSendsMedia(desc webrtc.SessionDescription) error {
-	parsed, err := desc.Unmarshal()
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrBadOffer, err)
-	}
-
-	for _, media := range parsed.MediaDescriptions {
-		for _, attr := range media.Attributes {
-			if attr.Key == "sendonly" || attr.Key == "sendrecv" {
-				return nil
-			}
-		}
-	}
-
-	return ErrNotSending
 }
 
 func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (string, string, error) {
@@ -214,7 +200,7 @@ func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (s
 		_, addErr := peer.AddTransceiverFromKind(kind,
 			webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
 		if addErr != nil {
-			return "", "", s.abort(peer, fmt.Errorf("%w: transceiver: %w", ErrBadOffer, addErr))
+			return "", "", peerpkg.Discard(peer, fmt.Errorf("%w: transceiver: %w", ErrBadOffer, addErr), s.log)
 		}
 	}
 
@@ -234,14 +220,14 @@ func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (s
 		}
 	})
 
-	answer, err := s.exchange(peer, desc)
+	answer, err := peerpkg.Answer(peer, desc)
 	if err != nil {
-		return "", "", s.abort(peer, err)
+		return "", "", peerpkg.Discard(peer, err, s.log)
 	}
 
 	resource, err := newResourceID()
 	if err != nil {
-		return "", "", s.abort(peer, err)
+		return "", "", peerpkg.Discard(peer, err, s.log)
 	}
 
 	session.Resource = resource
@@ -252,39 +238,6 @@ func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (s
 	s.mu.Unlock()
 
 	return answer, resource, nil
-}
-
-// abort closes a half-built peer and returns the reason it was abandoned, so no
-// negotiation failure leaves a PeerConnection and its ICE agent running.
-func (s *Server) abort(peer *webrtc.PeerConnection, cause error) error {
-	if err := peer.Close(); err != nil {
-		s.log.Warnf("close aborted peer: %v", err)
-	}
-
-	return cause
-}
-
-// exchange applies the offer and returns a fully gathered answer. WHIP has no
-// trickle path in this build, so gathering completes before the answer is sent.
-func (s *Server) exchange(peer *webrtc.PeerConnection, desc webrtc.SessionDescription) (string, error) {
-	if err := peer.SetRemoteDescription(desc); err != nil {
-		return "", fmt.Errorf("%w: remote description: %w", ErrBadOffer, err)
-	}
-
-	answer, err := peer.CreateAnswer(nil)
-	if err != nil {
-		return "", fmt.Errorf("%w: create answer: %w", ErrBadOffer, err)
-	}
-
-	gathered := webrtc.GatheringCompletePromise(peer)
-
-	if err := peer.SetLocalDescription(answer); err != nil {
-		return "", fmt.Errorf("%w: local description: %w", ErrBadOffer, err)
-	}
-
-	<-gathered
-
-	return peer.LocalDescription().SDP, nil
 }
 
 // drain forwards the track into the relay and counts bytes. Packets are passed

@@ -203,10 +203,11 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func (s *Server) handleAdd(wri http.ResponseWriter, req *http.Request) {
-	var body struct {
-		Label string `json:"label"`
-	}
+// mutate decodes a request body and runs a change against the config. All five
+// mutating endpoints were the same decode, the same two error shapes, and the
+// same empty success.
+func mutate[T any](s *Server, wri http.ResponseWriter, req *http.Request, run func(T) error) {
+	var body T
 
 	if err := decode(req, &body); err != nil {
 		s.fail(wri, http.StatusBadRequest, err)
@@ -214,57 +215,90 @@ func (s *Server) handleAdd(wri http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if _, err := s.cfg.AddIngest(body.Label); err != nil {
-		s.fail(wri, http.StatusInternalServerError, err)
+	if err := run(body); err != nil {
+		s.fail(wri, http.StatusNotFound, err)
 
 		return
 	}
 
 	wri.WriteHeader(http.StatusNoContent)
+}
+
+type idBody struct {
+	ID string `json:"id"`
+}
+
+func (s *Server) handleAdd(wri http.ResponseWriter, req *http.Request) {
+	mutate(s, wri, req, func(body struct {
+		Label string `json:"label"`
+	},
+	) error {
+		_, err := s.cfg.AddIngest(body.Label)
+
+		return err
+	})
 }
 
 func (s *Server) handleRemove(wri http.ResponseWriter, req *http.Request) {
-	var body struct {
-		ID string `json:"id"`
-	}
+	mutate(s, wri, req, func(body idBody) error {
+		if err := s.cfg.RemoveIngest(body.ID); err != nil {
+			return err
+		}
 
-	if err := decode(req, &body); err != nil {
-		s.fail(wri, http.StatusBadRequest, err)
+		s.revoke(body.ID)
 
-		return
-	}
-
-	if err := s.cfg.RemoveIngest(body.ID); err != nil {
-		s.fail(wri, http.StatusNotFound, err)
-
-		return
-	}
-
-	s.revoke(body.ID)
-
-	wri.WriteHeader(http.StatusNoContent)
+		return nil
+	})
 }
 
 func (s *Server) handleDelay(wri http.ResponseWriter, req *http.Request) {
-	var body struct {
-		ID      string `json:"id"`
-		DelayMS int    `json:"delayMs"`
-	}
+	mutate(s, wri, req, func(body struct {
+		idBody
+		DelayMS int `json:"delayMs"`
+	},
+	) error {
+		if err := s.cfg.SetDelay(body.ID, body.DelayMS); err != nil {
+			return err
+		}
 
-	if err := decode(req, &body); err != nil {
-		s.fail(wri, http.StatusBadRequest, err)
+		s.applyDelay(body.ID)
 
-		return
-	}
+		return nil
+	})
+}
 
-	if err := s.cfg.SetDelay(body.ID, body.DelayMS); err != nil {
-		s.fail(wri, http.StatusNotFound, err)
+func (s *Server) handleGroup(wri http.ResponseWriter, req *http.Request) {
+	mutate(s, wri, req, func(body struct {
+		idBody
+		Group string `json:"group"`
+	},
+	) error {
+		// Peers of the group being left also need retargeting: losing the slowest
+		// member should let the rest speed back up.
+		former := s.cfg.GroupPeers(body.ID)
 
-		return
-	}
+		if err := s.cfg.SetSyncGroup(body.ID, body.Group); err != nil {
+			return err
+		}
 
-	s.applyDelay(body.ID)
-	wri.WriteHeader(http.StatusNoContent)
+		for _, peer := range former {
+			s.retarget(peer, s.cfg.EffectiveDelay(peer))
+		}
+
+		s.applyDelay(body.ID)
+
+		return nil
+	})
+}
+
+func (s *Server) handleLabel(wri http.ResponseWriter, req *http.Request) {
+	mutate(s, wri, req, func(body struct {
+		idBody
+		Label string `json:"label"`
+	},
+	) error {
+		return s.cfg.SetLabel(body.ID, body.Label)
+	})
 }
 
 // applyDelay pushes the effective target to every camera sharing this one's
@@ -273,57 +307,6 @@ func (s *Server) applyDelay(id string) {
 	for _, peer := range s.cfg.GroupPeers(id) {
 		s.retarget(peer, s.cfg.EffectiveDelay(peer))
 	}
-}
-
-func (s *Server) handleGroup(wri http.ResponseWriter, req *http.Request) {
-	var body struct {
-		ID    string `json:"id"`
-		Group string `json:"group"`
-	}
-
-	if err := decode(req, &body); err != nil {
-		s.fail(wri, http.StatusBadRequest, err)
-
-		return
-	}
-
-	// Peers of the group being left also need retargeting: losing the slowest
-	// member should let the rest speed back up.
-	former := s.cfg.GroupPeers(body.ID)
-
-	if err := s.cfg.SetSyncGroup(body.ID, body.Group); err != nil {
-		s.fail(wri, http.StatusNotFound, err)
-
-		return
-	}
-
-	for _, peer := range former {
-		s.retarget(peer, s.cfg.EffectiveDelay(peer))
-	}
-
-	s.applyDelay(body.ID)
-	wri.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) handleLabel(wri http.ResponseWriter, req *http.Request) {
-	var body struct {
-		ID    string `json:"id"`
-		Label string `json:"label"`
-	}
-
-	if err := decode(req, &body); err != nil {
-		s.fail(wri, http.StatusBadRequest, err)
-
-		return
-	}
-
-	if err := s.cfg.SetLabel(body.ID, body.Label); err != nil {
-		s.fail(wri, http.StatusNotFound, err)
-
-		return
-	}
-
-	wri.WriteHeader(http.StatusNoContent)
 }
 
 // fail logs the detail and returns only a status to the caller. Config paths and

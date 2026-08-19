@@ -322,8 +322,9 @@ func (c *Config) GroupPeers(id string) []string {
 	return peers
 }
 
-// SetSyncGroup moves a camera into a named group, or out of one when empty.
-func (c *Config) SetSyncGroup(id, group string) error {
+// update applies a change to one camera under the write lock and saves. Every
+// setter was the same find-by-id loop around one assignment.
+func (c *Config) update(id string, change func(*Ingest)) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -332,49 +333,28 @@ func (c *Config) SetSyncGroup(id, group string) error {
 			continue
 		}
 
-		c.Ingests[idx].SyncGroup = group
+		change(&c.Ingests[idx])
 
 		return c.saveLocked()
 	}
 
 	return fmt.Errorf("%w: %s", ErrUnknownIngest, id)
+}
+
+// SetSyncGroup moves a camera into a named group, or out of one when empty.
+func (c *Config) SetSyncGroup(id, group string) error {
+	return c.update(id, func(ing *Ingest) { ing.SyncGroup = group })
 }
 
 // SetLabel renames a camera. The label is how someone tells four masked links
 // apart, so it has to be editable after the fact.
 func (c *Config) SetLabel(id, label string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for idx := range c.Ingests {
-		if c.Ingests[idx].ID != id {
-			continue
-		}
-
-		c.Ingests[idx].Label = label
-
-		return c.saveLocked()
-	}
-
-	return fmt.Errorf("%w: %s", ErrUnknownIngest, id)
+	return c.update(id, func(ing *Ingest) { ing.Label = label })
 }
 
 // SetDelay clamps to the permitted range and saves.
 func (c *Config) SetDelay(id string, delayMS int) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for idx := range c.Ingests {
-		if c.Ingests[idx].ID != id {
-			continue
-		}
-
-		c.Ingests[idx].DelayMS = clampDelay(delayMS)
-
-		return c.saveLocked()
-	}
-
-	return fmt.Errorf("%w: %s", ErrUnknownIngest, id)
+	return c.update(id, func(ing *Ingest) { ing.DelayMS = clampDelay(delayMS) })
 }
 
 // Role says which half of an ingest a key belongs to.

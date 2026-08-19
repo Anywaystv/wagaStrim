@@ -14,10 +14,12 @@ that works and is boring.
 The reason to choose this over BELABOX or a cloud ingest is that it is small enough to read in an
 afternoon. Every addition spends that budget.
 
-- Keep it small enough to read in an afternoon. The working number is 3500 lines of Go, revised
-  upward from 2000 once the buffer and the two signaling paths were real code rather than an
-  estimate. Report the count in any PR that moves it more than 200 lines, and say so plainly if a
-  phase pushes past the number instead of quietly redefining it again.
+- Keep it small enough to read in an afternoon. The working number is 3500 lines of **production**
+  Go, revised up from 2000 once the buffer and both signaling paths were written rather than
+  estimated. Tests are excluded and always were, which the earlier wording failed to say: nobody
+  reads the tests to understand the system, and a budget that counts them is a budget that argues
+  against testing. Report the count in any PR that moves it more than 200 lines, and say so plainly
+  if a phase pushes past the number instead of quietly redefining it again.
 - Pion, a tray library, and `testify` in tests are the entire dependency budget. It has already
   been spent. Adding a fourth needs a line in the PR saying what it replaced and why writing it
   ourselves was worse.

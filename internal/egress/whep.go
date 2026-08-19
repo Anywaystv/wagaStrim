@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
+	peerpkg "github.com/MarcFryd/wagaStrim/internal/peer"
 	"github.com/MarcFryd/wagaStrim/internal/relay"
 	"github.com/pion/logging"
 	"github.com/pion/webrtc/v4"
@@ -73,8 +74,13 @@ func (s *Server) Subscribe(key, offer string) (answer string, resource string, e
 	}
 
 	desc := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offer}
-	if dirErr := offerReceivesMedia(desc); dirErr != nil {
-		return "", "", dirErr
+	receives, dirErr := peerpkg.Direction(desc, "recvonly")
+	if dirErr != nil {
+		return "", "", fmt.Errorf("%w: %w", ErrBadOffer, dirErr)
+	}
+
+	if !receives {
+		return "", "", ErrNotReceiving
 	}
 
 	tracks, err := s.relay.Subscribe(ing.ID)
@@ -83,25 +89,6 @@ func (s *Server) Subscribe(key, offer string) (answer string, resource string, e
 	}
 
 	return s.negotiate(ing, desc, tracks)
-}
-
-// offerReceivesMedia rejects an offer that wants to publish. A WHIP client
-// pointed at this endpoint produces exactly that.
-func offerReceivesMedia(desc webrtc.SessionDescription) error {
-	parsed, err := desc.Unmarshal()
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrBadOffer, err)
-	}
-
-	for _, media := range parsed.MediaDescriptions {
-		for _, attr := range media.Attributes {
-			if attr.Key == "recvonly" || attr.Key == "sendrecv" {
-				return nil
-			}
-		}
-	}
-
-	return ErrNotReceiving
 }
 
 func (s *Server) negotiate(
@@ -117,7 +104,7 @@ func (s *Server) negotiate(
 	for _, track := range tracks {
 		sender, addErr := peer.AddTrack(track)
 		if addErr != nil {
-			return "", "", s.abort(peer, fmt.Errorf("%w: add track: %w", ErrBadOffer, addErr))
+			return "", "", peerpkg.Discard(peer, fmt.Errorf("%w: add track: %w", ErrBadOffer, addErr), s.log)
 		}
 
 		// RTCP from the subscriber has to be read or it backs up. Nothing acts on
@@ -125,14 +112,14 @@ func (s *Server) negotiate(
 		go drainRTCP(sender)
 	}
 
-	answer, err := s.exchange(peer, desc)
+	answer, err := peerpkg.Answer(peer, desc)
 	if err != nil {
-		return "", "", s.abort(peer, err)
+		return "", "", peerpkg.Discard(peer, err, s.log)
 	}
 
 	resource, err := config.NewResourceKey()
 	if err != nil {
-		return "", "", s.abort(peer, fmt.Errorf("%w: %w", ErrBadOffer, err))
+		return "", "", peerpkg.Discard(peer, fmt.Errorf("%w: %w", ErrBadOffer, err), s.log)
 	}
 
 	session := &Session{Resource: resource, IngestID: ing.ID, peer: peer}
@@ -160,35 +147,6 @@ func drainRTCP(sender *webrtc.RTPSender) {
 			return
 		}
 	}
-}
-
-func (s *Server) exchange(peer *webrtc.PeerConnection, desc webrtc.SessionDescription) (string, error) {
-	if err := peer.SetRemoteDescription(desc); err != nil {
-		return "", fmt.Errorf("%w: remote description: %w", ErrBadOffer, err)
-	}
-
-	answer, err := peer.CreateAnswer(nil)
-	if err != nil {
-		return "", fmt.Errorf("%w: create answer: %w", ErrBadOffer, err)
-	}
-
-	gathered := webrtc.GatheringCompletePromise(peer)
-
-	if err := peer.SetLocalDescription(answer); err != nil {
-		return "", fmt.Errorf("%w: local description: %w", ErrBadOffer, err)
-	}
-
-	<-gathered
-
-	return peer.LocalDescription().SDP, nil
-}
-
-func (s *Server) abort(peer *webrtc.PeerConnection, cause error) error {
-	if err := peer.Close(); err != nil {
-		s.log.Warnf("close aborted subscriber: %v", err)
-	}
-
-	return cause
 }
 
 // CloseIngest disconnects every subscriber of one camera.
