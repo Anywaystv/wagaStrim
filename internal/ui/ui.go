@@ -19,6 +19,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/MarcFryd/wagaStrim/internal/autostart"
 	"github.com/MarcFryd/wagaStrim/internal/config"
 	"github.com/MarcFryd/wagaStrim/internal/reach"
 	"github.com/MarcFryd/wagaStrim/internal/stats"
@@ -123,6 +124,8 @@ func New(
 	mux.HandleFunc("POST /api/ingests/label", srv.handleLabel)
 	mux.HandleFunc("POST /api/ingests/codecs", srv.handleCodecs)
 	mux.HandleFunc("GET /api/reachability", srv.handleReachability)
+	mux.HandleFunc("GET /api/autostart", srv.handleAutostart)
+	mux.HandleFunc("POST /api/autostart", srv.handleSetAutostart)
 	static, err := fs.Sub(assets, "web")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrEmbeddedAssets, err)
@@ -199,6 +202,41 @@ func (s *Server) handleReachability(wri http.ResponseWriter, req *http.Request) 
 	}
 
 	s.writeJSON(wri, report)
+}
+
+func (s *Server) handleAutostart(wri http.ResponseWriter, req *http.Request) {
+	s.writeJSON(wri, autostart.Status(req.Context()))
+}
+
+func (s *Server) handleSetAutostart(wri http.ResponseWriter, req *http.Request) {
+	var body struct {
+		On bool `json:"on"`
+	}
+
+	if err := decode(req, &body); err != nil {
+		s.fail(wri, http.StatusBadRequest, err)
+
+		return
+	}
+
+	act := autostart.Disable
+	if body.On {
+		act = autostart.Enable
+	}
+
+	if err := act(req.Context()); err != nil {
+		s.fail(wri, http.StatusInternalServerError, err)
+
+		return
+	}
+
+	// The stored flag is only what the page renders on load. The platform is the
+	// authority, and Status re-reads it, so the two cannot drift apart.
+	if err := s.cfg.SetAutostart(body.On); err != nil {
+		s.log.Warnf("record autostart: %v", err)
+	}
+
+	s.writeJSON(wri, autostart.Status(req.Context()))
 }
 
 func (s *Server) writeJSON(wri http.ResponseWriter, body any) {
