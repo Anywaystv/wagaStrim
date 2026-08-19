@@ -55,11 +55,12 @@ func (s *Session) add(count int) {
 
 // Server holds the shared WebRTC stack and the live sessions.
 type Server struct {
-	cfg   *config.Config
-	log   logging.LeveledLogger
-	api   *webrtc.API
-	relay *relay.Relay
-	stats *stats.Registry
+	cfg    *config.Config
+	log    logging.LeveledLogger
+	api    *webrtc.API
+	engine *webrtc.SettingEngine
+	relay  *relay.Relay
+	stats  *stats.Registry
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -74,8 +75,29 @@ func NewServer(
 	hub *relay.Relay,
 	counters *stats.Registry,
 ) (*Server, error) {
+	api, err := buildAPI(engine, config.AllCodecs())
+	if err != nil {
+		return nil, err
+	}
+
+	return &Server{
+		cfg:      cfg,
+		log:      log,
+		relay:    hub,
+		stats:    counters,
+		api:      api,
+		engine:   engine,
+		sessions: map[string]*Session{},
+		byIngest: map[string]string{},
+	}, nil
+}
+
+// buildAPI assembles a WebRTC stack offering exactly the named video codecs.
+// One is built per camera, because the toggles decide what the answer contains
+// and the MediaEngine is what carries that decision.
+func buildAPI(engine *webrtc.SettingEngine, codecs []string) (*webrtc.API, error) {
 	media := &webrtc.MediaEngine{}
-	if err := registerCodecs(media); err != nil {
+	if err := registerCodecs(media, codecs); err != nil {
 		return nil, err
 	}
 
@@ -100,36 +122,32 @@ func NewServer(
 
 	registry.Add(responder)
 
-	return &Server{
-		cfg:   cfg,
-		log:   log,
-		relay: hub,
-		stats: counters,
-		api: webrtc.NewAPI(
-			webrtc.WithMediaEngine(media),
-			webrtc.WithInterceptorRegistry(registry),
-			webrtc.WithSettingEngine(*engine),
-		),
-		sessions: map[string]*Session{},
-		byIngest: map[string]string{},
-	}, nil
+	return webrtc.NewAPI(
+		webrtc.WithMediaEngine(media),
+		webrtc.WithInterceptorRegistry(registry),
+		webrtc.WithSettingEngine(*engine),
+	), nil
 }
 
-// registerCodecs registers what phase 2 accepts. H.265 and AV1 arrive in phase 6
-// once the receiver side is known to handle them.
-func registerCodecs(media *webrtc.MediaEngine) error {
-	video := webrtc.RTPCodecParameters{
-		RTPCodecCapability: webrtc.RTPCodecCapability{
-			MimeType:     webrtc.MimeTypeH264,
-			ClockRate:    90000,
-			SDPFmtpLine:  "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
-			RTCPFeedback: videoFeedback(),
-		},
-		PayloadType: 96,
+// registerCodecs registers everything the relay can carry. Which of them an
+// ingest actually offers is decided per camera when the answer is built.
+//
+// Payload types match pion's own defaults, so a client that hardcodes them
+// against a stock pion server still negotiates here.
+func registerCodecs(media *webrtc.MediaEngine, codecs []string) error {
+	wanted := map[string]bool{}
+	for _, name := range codecs {
+		wanted[name] = true
 	}
 
-	if err := media.RegisterCodec(video, webrtc.RTPCodecTypeVideo); err != nil {
-		return fmt.Errorf("%w: h264: %w", ErrBuildAPI, err)
+	for _, entry := range videoCodecs() {
+		if !wanted[entry.name] {
+			continue
+		}
+
+		if err := media.RegisterCodec(entry.params, webrtc.RTPCodecTypeVideo); err != nil {
+			return fmt.Errorf("%w: %s: %w", ErrBuildAPI, entry.name, err)
+		}
 	}
 
 	audio := webrtc.RTPCodecParameters{
@@ -146,6 +164,41 @@ func registerCodecs(media *webrtc.MediaEngine) error {
 	}
 
 	return nil
+}
+
+type codecEntry struct {
+	name   string
+	params webrtc.RTPCodecParameters
+}
+
+func videoCodecs() []codecEntry {
+	return []codecEntry{
+		{config.CodecH264, webrtc.RTPCodecParameters{
+			RTPCodecCapability: webrtc.RTPCodecCapability{
+				MimeType:     webrtc.MimeTypeH264,
+				ClockRate:    90000,
+				SDPFmtpLine:  "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+				RTCPFeedback: videoFeedback(),
+			},
+			PayloadType: 96,
+		}},
+		{config.CodecH265, webrtc.RTPCodecParameters{
+			RTPCodecCapability: webrtc.RTPCodecCapability{
+				MimeType:     webrtc.MimeTypeH265,
+				ClockRate:    90000,
+				RTCPFeedback: videoFeedback(),
+			},
+			PayloadType: 116,
+		}},
+		{config.CodecAV1, webrtc.RTPCodecParameters{
+			RTPCodecCapability: webrtc.RTPCodecCapability{
+				MimeType:     webrtc.MimeTypeAV1,
+				ClockRate:    90000,
+				RTCPFeedback: videoFeedback(),
+			},
+			PayloadType: 45,
+		}},
+	}
 }
 
 func videoFeedback() []webrtc.RTCPFeedback {
@@ -191,7 +244,14 @@ func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (s
 		return "", "", fmt.Errorf("%w: %s", ErrAlreadyLive, ing.Label)
 	}
 
-	peer, err := s.api.NewPeerConnection(webrtc.Configuration{})
+	// The camera's own codec set, not the server's. A toggle only means anything
+	// if it changes what the answer offers.
+	api, err := buildAPI(s.engine, ing.Codecs)
+	if err != nil {
+		return "", "", err
+	}
+
+	peer, err := api.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", ErrBadOffer, err)
 	}
@@ -205,20 +265,7 @@ func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (s
 	}
 
 	session := &Session{IngestID: ing.ID, peer: peer}
-	peer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) { s.drain(ing, session, peer, track) })
-	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		s.log.Infof("ingest %s: %s", ing.Label, state)
-
-		if state == webrtc.PeerConnectionStateConnected {
-			s.stats.Publishing(ing.ID)
-		}
-
-		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
-			s.stats.Stopped(ing.ID)
-			s.relay.Drop(ing.ID)
-			s.forget(session.Resource)
-		}
-	})
+	s.watch(ing, session, peer)
 
 	answer, err := peerpkg.Answer(peer, desc)
 	if err != nil {
@@ -294,6 +341,27 @@ func (s *Server) requestKeyframe(peer *webrtc.PeerConnection, ssrc webrtc.SSRC) 
 	if err != nil {
 		s.log.Warnf("keyframe request: %v", err)
 	}
+}
+
+// watch wires the callbacks that track a publisher's life.
+func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerConnection) {
+	peer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		s.drain(ing, session, peer, track)
+	})
+
+	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		s.log.Infof("ingest %s: %s", ing.Label, state)
+
+		switch state {
+		case webrtc.PeerConnectionStateConnected:
+			s.stats.Publishing(ing.ID)
+		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			s.stats.Stopped(ing.ID)
+			s.relay.Drop(ing.ID)
+			s.forget(session.Resource)
+		default:
+		}
+	})
 }
 
 // CloseIngest ends whatever is publishing to one camera. Deleting a camera has

@@ -77,6 +77,15 @@ document.addEventListener("change", (ev) => {
     return;
   }
 
+  const codecs = ev.target.closest("[data-codecs]");
+  if (codecs) {
+    post("/api/ingests/codecs", {
+      id: codecs.getAttribute("data-codecs"),
+      codecs: [...codecs.querySelectorAll("input:checked")].map((i) => i.value),
+    }).then(() => location.reload()).catch(() => {});
+    return;
+  }
+
   const label = ev.target.closest("[data-label]");
   if (label) {
     post("/api/ingests/label", {

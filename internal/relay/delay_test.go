@@ -198,7 +198,50 @@ func TestKeyframeDetection(t *testing.T) {
 
 // An unrecognized codec must resume immediately rather than drop forever.
 func TestUnknownCodecNeverStallsCorrection(t *testing.T) {
-	assert.True(t, isKeyframe("video/AV1", []byte{0x00}))
+	assert.True(t, isKeyframe("video/VP9", []byte{0x00}))
+}
+
+func TestH265KeyframeDetection(t *testing.T) {
+	// H.265 NAL type is bits 1..6 of the first byte, so the value is shifted.
+	nal := func(t byte) byte { return t << 1 }
+
+	cases := []struct {
+		name    string
+		payload []byte
+		want    bool
+	}{
+		{"IDR_W_RADL", []byte{nal(19), 0x01}, true},
+		{"CRA", []byte{nal(21), 0x01}, true},
+		{"VPS", []byte{nal(32), 0x01}, true},
+		{"PPS", []byte{nal(34), 0x01}, true},
+		{"trailing picture", []byte{nal(1), 0x01}, false},
+		{"aggregation with an IDR", []byte{nal(48), 0x01, 0x00, 0x02, nal(19), 0x01}, true},
+		{"aggregation without one", []byte{nal(48), 0x01, 0x00, 0x02, nal(1), 0x01}, false},
+		{"fragment starting an IDR", []byte{nal(49), 0x01, 0x80 | 19}, true},
+		{"fragment continuing one", []byte{nal(49), 0x01, 19}, false},
+		{"truncated aggregation", []byte{nal(48), 0x01, 0x00, 0x40, nal(19)}, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isKeyframe("video/H265", tc.payload))
+		})
+	}
+}
+
+// AV1 carries no NAL types; the N bit of the aggregation header is the only
+// keyframe signal available without decoding OBUs.
+func TestAV1KeyframeDetection(t *testing.T) {
+	assert.True(t, isKeyframe("video/AV1", []byte{0b0000_1000}), "N set starts a coded video sequence")
+	assert.False(t, isKeyframe("video/AV1", []byte{0b0000_0000}), "N clear is mid sequence")
+	assert.False(t, isKeyframe("video/AV1", nil))
+}
+
+// Resuming an H.265 stream on a trailing picture would show corruption. Before
+// this phase every non-H.264 codec returned true and would have done exactly
+// that.
+func TestH265DoesNotResumeOnATrailingPicture(t *testing.T) {
+	assert.False(t, isKeyframe("video/H265", []byte{1 << 1, 0x01}))
 }
 
 func TestLatePacketsAreCounted(t *testing.T) {

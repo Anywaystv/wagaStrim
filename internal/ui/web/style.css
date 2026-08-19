@@ -74,6 +74,14 @@ h2 { margin: 0 0 .2rem; font-size: 1rem; letter-spacing: -.01em }
 }
 h2 { display: flex; align-items: center }
 .field-label { display: block; margin-bottom: .25rem; color: var(--muted); font-size: .76rem }
+.codecs { border: 0; padding: 0; margin: .9rem 0 0 }
+.codecs legend { padding: 0; margin-bottom: .25rem; color: var(--muted); font-size: .76rem }
+.codec {
+  display: grid; grid-template-columns: auto 1fr; gap: .1rem .5rem;
+  align-items: baseline; padding: .3rem 0;
+}
+.codec input { grid-row: span 2; accent-color: var(--accent) }
+.codec small { grid-column: 2; color: var(--muted); font-size: .74rem; line-height: 1.4 }
 .label-edit {
   border: 1px solid transparent; background: transparent; padding: .15rem .3rem;
   font: inherit; font-weight: 650; letter-spacing: -.01em; color: var(--text); width: 14rem;

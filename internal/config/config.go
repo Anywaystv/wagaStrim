@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 )
 
@@ -40,6 +41,11 @@ const (
 	CodecH265 = "h265"
 	CodecAV1  = "av1"
 )
+
+// AllCodecs is every video codec the relay can carry, in preference order.
+func AllCodecs() []string {
+	return []string{CodecH264, CodecH265, CodecAV1}
+}
 
 // Ingest is one camera: a link pair, a codec set, and a playout target.
 type Ingest struct {
@@ -350,6 +356,25 @@ func (c *Config) SetSyncGroup(id, group string) error {
 // apart, so it has to be editable after the fact.
 func (c *Config) SetLabel(id, label string) error {
 	return c.update(id, func(ing *Ingest) { ing.Label = label })
+}
+
+// SetCodecs records which video codecs a camera offers. An empty set would
+// negotiate nothing, so H.264 is restored rather than leaving a dead camera:
+// every phone can send it, which makes it the only safe fallback.
+func (c *Config) SetCodecs(id string, codecs []string) error {
+	keep := make([]string, 0, len(codecs))
+
+	for _, name := range AllCodecs() {
+		if slices.Contains(codecs, name) {
+			keep = append(keep, name)
+		}
+	}
+
+	if len(keep) == 0 {
+		keep = []string{CodecH264}
+	}
+
+	return c.update(id, func(ing *Ingest) { ing.Codecs = keep })
 }
 
 // SetDelay clamps to the permitted range and saves.
