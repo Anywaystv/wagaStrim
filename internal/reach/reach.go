@@ -30,6 +30,7 @@ type Report struct {
 	LANHosts   []string `json:"lanHosts"`
 	MediaPort  int      `json:"mediaPort"`
 	SignalPort int      `json:"signalPort"`
+	SocketNote string   `json:"socketNote,omitempty"`
 	Note       string   `json:"note"`
 	Err        string   `json:"error,omitempty"`
 }

@@ -16,11 +16,13 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"slices"
 	"time"
 
 	"github.com/MarcFryd/wagaStrim/internal/autostart"
 	"github.com/MarcFryd/wagaStrim/internal/config"
+	"github.com/MarcFryd/wagaStrim/internal/ingest"
 	"github.com/MarcFryd/wagaStrim/internal/reach"
 	"github.com/MarcFryd/wagaStrim/internal/stats"
 	"github.com/pion/logging"
@@ -126,6 +128,15 @@ func New(
 	mux.HandleFunc("GET /api/reachability", srv.handleReachability)
 	mux.HandleFunc("GET /api/autostart", srv.handleAutostart)
 	mux.HandleFunc("POST /api/autostart", srv.handleSetAutostart)
+
+	// Profiling lives on the loopback listener and nowhere else. It exposes
+	// memory contents and can be made to burn a core, so it must never be
+	// reachable from the internet the way the signaling listener is.
+	mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+	mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 	static, err := fs.Sub(assets, "web")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrEmbeddedAssets, err)
@@ -193,6 +204,7 @@ func (s *Server) handleStats(wri http.ResponseWriter, _ *http.Request) {
 // machine with no internet still boots and serves its settings page.
 func (s *Server) handleReachability(wri http.ResponseWriter, req *http.Request) {
 	report := reach.Look(req.Context(), s.cfg.MediaPort, s.cfg.SignalPort)
+	report.SocketNote = socketNote()
 
 	// Remember a discovered address so the links stop reading as a placeholder.
 	if report.PublicHost != "" {
@@ -237,6 +249,28 @@ func (s *Server) handleSetAutostart(wri http.ResponseWriter, req *http.Request) 
 	}
 
 	s.writeJSON(wri, autostart.Status(req.Context()))
+}
+
+// socketNote reports the receive buffer the kernel actually grants. A clamped
+// buffer drops packets before the application sees them, and nothing logs it,
+// so the number has to be visible rather than assumed.
+func socketNote() string {
+	const want = 8 << 20
+
+	granted, err := ingest.ProbeSocketBuffer(want)
+	if err != nil || granted == 0 {
+		return ""
+	}
+
+	if granted >= want {
+		return fmt.Sprintf("Socket receive buffer %d MB, as requested.", granted>>20)
+	}
+
+	return fmt.Sprintf(
+		"Socket receive buffer is %d KB, but %d MB was requested. The kernel capped it, "+
+			"which drops packets under burst before this app sees them. Raise net.core.rmem_max "+
+			"on Linux or kern.ipc.maxsockbuf on macOS.",
+		granted>>10, want>>20)
 }
 
 func (s *Server) writeJSON(wri http.ResponseWriter, body any) {

@@ -153,7 +153,8 @@ document.getElementById("check").addEventListener("click", async (ev) => {
     const pub = r.publicHost ? `Public address ${r.publicHost}. ` : "";
 
     out.textContent = pub + r.note + lan +
-      ` Forward udp/${r.mediaPort} and tcp/${r.signalPort}.`;
+      ` Forward udp/${r.mediaPort} and tcp/${r.signalPort}.` +
+      (r.socketNote ? " " + r.socketNote : "");
 
     if (r.publicHost) setTimeout(() => location.reload(), 1200);
   } catch (err) {
