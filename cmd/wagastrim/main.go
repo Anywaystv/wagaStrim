@@ -14,7 +14,9 @@ import (
 	"syscall"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
+	"github.com/MarcFryd/wagaStrim/internal/egress"
 	"github.com/MarcFryd/wagaStrim/internal/ingest"
+	"github.com/MarcFryd/wagaStrim/internal/relay"
 	"github.com/MarcFryd/wagaStrim/internal/signal"
 	"github.com/MarcFryd/wagaStrim/internal/tray"
 	"github.com/MarcFryd/wagaStrim/internal/ui"
@@ -62,14 +64,19 @@ func run(headless bool, log logging.LeveledLogger) error {
 		}
 	}()
 
-	whip, err := ingest.NewServer(cfg, log, engine)
+	hub := relay.New()
+
+	whip, err := ingest.NewServer(cfg, log, engine, hub)
 	if err != nil {
 		return err
 	}
 
 	defer whip.Close()
 
-	public := signal.New(cfg, log, whip)
+	whep := egress.NewServer(cfg, log, whip.API(), hub)
+	defer whep.Close()
+
+	public := signal.New(cfg, log, whip, whep)
 
 	ctx, stop := signalpkg.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

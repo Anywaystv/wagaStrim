@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
+	"github.com/MarcFryd/wagaStrim/internal/relay"
 	"github.com/pion/logging"
 	"github.com/pion/webrtc/v4"
 	pionmedia "github.com/pion/webrtc/v4/pkg/media"
@@ -17,6 +18,15 @@ import (
 
 // newTestServer builds a server on an ephemeral media port with one ingest.
 func newTestServer(t *testing.T) (*Server, *config.Ingest) {
+	t.Helper()
+
+	srv, ing, _ := newTestServerWithRelay(t)
+
+	return srv, ing
+}
+
+// newTestServerWithRelay also hands back the relay so egress tests can attach.
+func newTestServerWithRelay(t *testing.T) (*Server, *config.Ingest, *relay.Relay) {
 	t.Helper()
 
 	cfg := &config.Config{}
@@ -31,11 +41,13 @@ func newTestServer(t *testing.T) (*Server, *config.Ingest) {
 
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
 
-	srv, err := NewServer(cfg, log, engine)
+	hub := relay.New()
+
+	srv, err := NewServer(cfg, log, engine, hub)
 	require.NoError(t, err)
 	t.Cleanup(srv.Close)
 
-	return srv, &cfg.Ingests[0]
+	return srv, &cfg.Ingests[0], hub
 }
 
 // publisher is a synthetic Moblin: it offers one sendonly H.264 track.

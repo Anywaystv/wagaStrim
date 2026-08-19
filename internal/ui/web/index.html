@@ -38,7 +38,7 @@
     </div>
 
     <div class="field">
-      <label>Receiver — paste into an OBS Browser Source</label>
+      <label>Receiver — add a Browser Source in OBS and paste this as the URL</label>
       <div class="row">
         <div class="secret masked" data-destination="OBS" data-secret="{{$.ReceiverBase}}{{.ReceiverKey}}">••••••••••••••••</div>
         <button class="button" data-reveal>Show</button>
@@ -52,6 +52,11 @@
         <input type="range" min="2000" max="10000" step="100" value="{{.DelayMS}}" data-delay="{{.ID}}">
       </div>
       <p class="muted">Two seconds of buffer is what keeps OBS fed through a dropout.</p>
+      <p class="muted">
+        In the Browser Source, tick <strong>Control audio via OBS</strong> or the sound goes to your
+        desktop instead of the mixer, and untick <strong>Shutdown source when not visible</strong> so
+        scene cuts do not reconnect the stream.
+      </p>
     </div>
   </section>
   {{end}}

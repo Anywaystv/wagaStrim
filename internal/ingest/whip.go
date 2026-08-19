@@ -12,9 +12,11 @@ import (
 	"sync"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
+	"github.com/MarcFryd/wagaStrim/internal/relay"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/nack"
 	"github.com/pion/logging"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -50,9 +52,10 @@ func (s *Session) add(count int) {
 
 // Server holds the shared WebRTC stack and the live sessions.
 type Server struct {
-	cfg *config.Config
-	log logging.LeveledLogger
-	api *webrtc.API
+	cfg   *config.Config
+	log   logging.LeveledLogger
+	api   *webrtc.API
+	relay *relay.Relay
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -60,7 +63,12 @@ type Server struct {
 }
 
 // NewServer builds the WebRTC stack once and shares it across sessions.
-func NewServer(cfg *config.Config, log logging.LeveledLogger, engine *webrtc.SettingEngine) (*Server, error) {
+func NewServer(
+	cfg *config.Config,
+	log logging.LeveledLogger,
+	engine *webrtc.SettingEngine,
+	hub *relay.Relay,
+) (*Server, error) {
 	media := &webrtc.MediaEngine{}
 	if err := registerCodecs(media); err != nil {
 		return nil, err
@@ -79,8 +87,9 @@ func NewServer(cfg *config.Config, log logging.LeveledLogger, engine *webrtc.Set
 	registry.Add(generator)
 
 	return &Server{
-		cfg: cfg,
-		log: log,
+		cfg:   cfg,
+		log:   log,
+		relay: hub,
 		api: webrtc.NewAPI(
 			webrtc.WithMediaEngine(media),
 			webrtc.WithInterceptorRegistry(registry),
@@ -146,8 +155,8 @@ func (s *Server) Publish(key, offer string) (answer string, resource string, err
 	}
 
 	desc := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offer}
-	if err := offerSendsMedia(desc); err != nil {
-		return "", "", err
+	if dirErr := offerSendsMedia(desc); dirErr != nil {
+		return "", "", dirErr
 	}
 
 	return s.negotiate(ing, desc)
@@ -196,11 +205,12 @@ func (s *Server) negotiate(ing *config.Ingest, desc webrtc.SessionDescription) (
 	}
 
 	session := &Session{IngestID: ing.ID, peer: peer}
-	peer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) { s.drain(ing, session, track) })
+	peer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) { s.drain(ing, session, peer, track) })
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		s.log.Infof("ingest %s: %s", ing.Label, state)
 
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+			s.relay.Drop(ing.ID)
 			s.forget(session.Resource)
 		}
 	})
@@ -258,15 +268,21 @@ func (s *Server) exchange(peer *webrtc.PeerConnection, desc webrtc.SessionDescri
 	return peer.LocalDescription().SDP, nil
 }
 
-// drain reads the track and counts bytes. Phase 3 replaces this with a fan-out
-// into the playout buffer; until then, arriving media is the whole proof.
-func (s *Server) drain(ing *config.Ingest, session *Session, track *webrtc.TrackRemote) {
+// drain forwards the track into the relay and counts bytes. Packets are passed
+// through untouched: no depacketising, no re-encoding, no timestamp rewriting.
+func (s *Server) drain(ing *config.Ingest, session *Session, peer *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	s.log.Infof("ingest %s: track %s %s", ing.Label, track.Kind(), track.Codec().MimeType)
 
-	buf := make([]byte, 1500)
+	out, err := s.relay.Publish(ing.ID, track.Kind(), track.Codec().RTPCodecCapability,
+		func() { s.requestKeyframe(peer, track.SSRC()) })
+	if err != nil {
+		s.log.Errorf("ingest %s: %v", ing.Label, err)
+
+		return
+	}
 
 	for {
-		count, _, err := track.Read(buf)
+		pkt, _, err := track.ReadRTP()
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				s.log.Infof("ingest %s: track ended: %v", ing.Label, err)
@@ -275,7 +291,20 @@ func (s *Server) drain(ing *config.Ingest, session *Session, track *webrtc.Track
 			return
 		}
 
-		session.add(count)
+		session.add(pkt.MarshalSize())
+
+		if err := relay.Forward(out, pkt); err != nil {
+			s.log.Warnf("ingest %s: forward: %v", ing.Label, err)
+		}
+	}
+}
+
+// requestKeyframe asks the publisher for an IDR so a subscriber that just joined
+// sees a picture now instead of at the next natural keyframe.
+func (s *Server) requestKeyframe(peer *webrtc.PeerConnection, ssrc webrtc.SSRC) {
+	err := peer.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(ssrc)}})
+	if err != nil {
+		s.log.Warnf("keyframe request: %v", err)
 	}
 }
 
@@ -345,4 +374,9 @@ func newResourceID() (string, error) {
 	}
 
 	return key, nil
+}
+
+// API exposes the shared WebRTC stack so egress does not build a second one.
+func (s *Server) API() *webrtc.API {
+	return s.api
 }
