@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>wagaStrim</title>
+<link rel="stylesheet" href="/static/style.css">
+<header>
+  <span class="wordmark">waga<span>Strim</span></span>
+  <span class="header-end">
+    <span class="status-button warn">no media</span>
+  </span>
+</header>
+<main>
+  <p class="notice">
+    Phase 1 skeleton. Links are issued and stored, but nothing is listening for media yet.
+  </p>
+
+  {{if not .Ingests}}
+    <div class="card empty">No cameras yet. Add one to get a link pair.</div>
+  {{end}}
+
+  {{range .Ingests}}
+  <section class="card" data-id="{{.ID}}">
+    <div class="row between">
+      <h2>{{.Label}}</h2>
+      <span class="row">
+        {{range .Codecs}}<span class="pill">{{.}}</span>{{end}}
+        <button class="button quiet" data-remove="{{.ID}}">Remove</button>
+      </span>
+    </div>
+
+    <div class="field">
+      <label>Sender — paste into Moblin</label>
+      <div class="row">
+        <div class="secret masked" data-destination="Moblin" data-secret="{{$.SenderBase}}{{.SenderKey}}">••••••••••••••••</div>
+        <button class="button" data-reveal>Show</button>
+        <button class="button" data-copy>Copy</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Receiver — paste into an OBS Browser Source</label>
+      <div class="row">
+        <div class="secret masked" data-destination="OBS" data-secret="{{$.ReceiverBase}}{{.ReceiverKey}}">••••••••••••••••</div>
+        <button class="button" data-reveal>Show</button>
+        <button class="button" data-copy>Copy</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Delay <output data-delay-out>{{.DelayMS}}</output> ms — minimum 2000</label>
+      <div class="row">
+        <input type="range" min="2000" max="10000" step="100" value="{{.DelayMS}}" data-delay="{{.ID}}">
+      </div>
+      <p class="muted">Two seconds of buffer is what keeps OBS fed through a dropout.</p>
+    </div>
+  </section>
+  {{end}}
+
+  <section class="card">
+    <div class="row">
+      <input type="text" id="label" placeholder="Camera name" maxlength="48">
+      <button class="button" id="add">Add camera</button>
+    </div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
