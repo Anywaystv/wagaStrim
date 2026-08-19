@@ -55,13 +55,27 @@ precondition for paths 2..N still being routable.
 
 ### The two things that actually need work
 
-**The replay window is the skew limit.** Bonded paths have wildly different latency — a good SIM
-at 30 ms alongside a congested one at 400 ms. The lagging path's packets arrive far behind the
+**The replay window is the skew limit.** Bonded paths have wildly different latency: a good SIM at
+30 ms alongside a congested one at 400 ms. The lagging path's packets arrive far behind the
 sequence numbers the leading path already advanced. Once that gap exceeds the replay window they
-are rejected as too old, and the slow path silently contributes nothing. Size the window to the
-worst tolerable skew via `SettingEngine.SetSRTPReplayProtectionWindow`, and surface per-path
-accepted-versus-rejected counts in stats so a mis-sized window is visible rather than mysterious.
-Do not reach for `disableSRTPReplayProtection` — that removes the dedup we depend on.
+are rejected as too old and the slow path silently contributes nothing. Size the window to the
+worst tolerable skew via `SettingEngine.SetSRTPReplayProtectionWindow`. Never reach for
+`disableSRTPReplayProtection`: it removes the deduplication the whole approach depends on.
+
+**Per-path traffic counts are not obtainable, and an earlier draft promised them.** Two separate
+limits, both checked in the source rather than assumed:
+
+- `ice/candidate_base.go:373` attributes every received packet to the *selected* pair, in the only
+  call site of `UpdatePacketReceived`. A packet arriving on the second SIM's socket is counted
+  against the first SIM's pair. The merge happens before anything can attribute it.
+- `pion/srtp` builds a `duplicatedError` carrying the SSRC and index when the replay detector
+  rejects a packet, but that error is consumed inside the session read loop and never reaches the
+  application. Deduplication is invisible from outside.
+
+So a mis-sized replay window cannot be made visible the way this plan said it would be. What can
+honestly be shown is how many candidate pairs are established and which one is nominated, which
+tells a bonding user whether their extra paths exist at all. Attributing bytes to them would need
+a change in pion, and claiming to do it with the data available would be a fabrication.
 
 **The sender is the real blocker.** Moblin opens one PeerConnection over the default route and
 sends over the selected pair only. Nothing on our side changes that. Options, in order of cost:
@@ -487,7 +501,8 @@ buffer sysctl differs per platform and is handled by reading the value back, as 
 6. H.265 and AV1 negotiation, codec toggles, per-codec receiver guidance in the UI.
 7. Multiple ingests — registry, per-ingest links and stats, add and delete, sync groups.
 8. Renomination and interface reporting.
-9. Bonding receive path — replay window sizing, per-path stats, synthetic multi-path sender test.
+9. Bonding receive path — replay window sizing, candidate pair reporting, and an honest account
+   of what cannot be measured.
 10. Autostart on all three platforms, including clean removal.
 11. Performance pass — buffer pooling, socket sizing, pprof, benchmarks in the PR.
 12. Soak and impairment runs, then real hardware with a phone outdoors.

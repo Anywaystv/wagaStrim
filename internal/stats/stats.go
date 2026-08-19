@@ -27,6 +27,12 @@ type Snapshot struct {
 	Advice   string `json:"advice,omitempty"`
 	Path     string `json:"path,omitempty"`
 	Switches int    `json:"switches"`
+
+	// How many candidate pairs succeeded, out of how many exist. Not how much
+	// each carried: pion credits every received packet to the selected pair, so
+	// per-path traffic cannot be measured. See internal/ingest/paths.go.
+	PathsLive  int `json:"pathsLive"`
+	PathsTotal int `json:"pathsTotal"`
 }
 
 type sample struct {
@@ -35,8 +41,10 @@ type sample struct {
 }
 
 type counter struct {
-	samples []sample
-	path    string
+	samples    []sample
+	path       string
+	pathsLive  int
+	pathsTotal int
 
 	// Renomination re-homes a stream onto a better candidate without a
 	// reconnect. Counting the moves is how anyone can tell it did anything: the
@@ -121,6 +129,16 @@ func (r *Registry) Path(ingestID, path string) {
 	entry.path = path
 }
 
+// Pairs records how many candidate pairs are usable.
+func (r *Registry) Pairs(ingestID string, live, total int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if entry, ok := r.counters[ingestID]; ok {
+		entry.pathsLive, entry.pathsTotal = live, total
+	}
+}
+
 // Observe records bytes arriving and the buffer's own counters.
 func (r *Registry) Observe(ingestID string, total, late, dropped uint64) {
 	r.mu.Lock()
@@ -170,12 +188,14 @@ func (r *Registry) Of(ingestID string) Snapshot {
 	}
 
 	snap := Snapshot{
-		Live:     entry.live,
-		Bitrate:  bitrate(entry.samples),
-		Late:     entry.late,
-		Dropped:  entry.dropped,
-		Path:     entry.path,
-		Switches: entry.switches,
+		Live:       entry.live,
+		Bitrate:    bitrate(entry.samples),
+		Late:       entry.late,
+		Dropped:    entry.dropped,
+		Path:       entry.path,
+		Switches:   entry.switches,
+		PathsLive:  entry.pathsLive,
+		PathsTotal: entry.pathsTotal,
 	}
 
 	if entry.live {
