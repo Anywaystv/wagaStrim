@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
 	"github.com/MarcFryd/wagaStrim/internal/relay"
@@ -85,6 +86,15 @@ func NewServer(
 	}
 
 	registry.Add(generator)
+
+	// The same depth outbound: a subscriber has to be able to ask for anything
+	// the buffer still holds, or the extra history on the inbound side is wasted.
+	responder, err := nack.NewResponderInterceptor(nack.ResponderSize(nackHistory))
+	if err != nil {
+		return nil, fmt.Errorf("%w: nack responder: %w", ErrBuildAPI, err)
+	}
+
+	registry.Add(responder)
 
 	return &Server{
 		cfg:   cfg,
@@ -273,13 +283,24 @@ func (s *Server) exchange(peer *webrtc.PeerConnection, desc webrtc.SessionDescri
 func (s *Server) drain(ing *config.Ingest, session *Session, peer *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	s.log.Infof("ingest %s: track %s %s", ing.Label, track.Kind(), track.Codec().MimeType)
 
-	out, err := s.relay.Publish(ing.ID, track.Kind(), track.Codec().RTPCodecCapability,
-		func() { s.requestKeyframe(peer, track.SSRC()) })
+	askKeyframe := func() { s.requestKeyframe(peer, track.SSRC()) }
+
+	out, err := s.relay.Publish(ing.ID, track.Kind(), track.Codec().RTPCodecCapability, askKeyframe)
 	if err != nil {
 		s.log.Errorf("ingest %s: %v", ing.Label, err)
 
 		return
 	}
+
+	buf := relay.NewBuffer(
+		time.Duration(ing.DelayMS)*time.Millisecond,
+		track.Codec().ClockRate,
+		track.Codec().MimeType,
+		askKeyframe,
+	)
+	defer buf.Close()
+
+	go relay.Feed(out, buf, func(err error) { s.log.Warnf("ingest %s: forward: %v", ing.Label, err) })
 
 	for {
 		pkt, _, err := track.ReadRTP()
@@ -292,10 +313,7 @@ func (s *Server) drain(ing *config.Ingest, session *Session, peer *webrtc.PeerCo
 		}
 
 		session.add(pkt.MarshalSize())
-
-		if err := relay.Forward(out, pkt); err != nil {
-			s.log.Warnf("ingest %s: forward: %v", ing.Label, err)
-		}
+		buf.Push(pkt)
 	}
 }
 

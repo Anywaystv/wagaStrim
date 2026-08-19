@@ -166,11 +166,21 @@ of two; 4096 is a legal value for each. `ResponderSize` holds real packets, so b
 per stream; `GeneratorSize` is a bitmap and costs nothing. Leave `GeneratorInterval` at its 100 ms
 default — that is twenty retry rounds inside the window.
 
-Two seconds of buffer buys two separate things, and they have different ceilings. Absorbing an
-outage works for the full two seconds unconditionally, because it is just held bytes. Recovering
-lost packets is additionally capped by how far back *Moblin* retains packets for retransmission,
-which is its choice and not ours. Measure the real recovery depth against a phone before claiming
-a number anywhere.
+**What the buffer actually buys, corrected.** An earlier draft said absorbing an outage works for
+the full two seconds unconditionally "because it is just held bytes". That is wrong, and the
+scheduling design is what makes it wrong.
+
+Packets have to be released on a schedule derived from their RTP timestamp, not from when they
+arrived. Arrival-based release just adds a fixed delay: a 1.5 second gap in arrivals becomes a 1.5
+second gap in output, two seconds later. Timestamp-based release is what makes the buffer useful,
+because a packet delayed or retransmitted still carries the timestamp saying where it belongs, and
+as long as it lands before its slot the output has no hole at all.
+
+So the two seconds buys time for late and retransmitted packets to still make their slot. It does
+not conjure packets the sender never sent or already discarded. A true uplink outage where Moblin
+drops frames from its own queue still leaves a gap, and no receiver-side buffer can fix that.
+Recovery depth is additionally capped by how far back Moblin retains packets for retransmission,
+which is its choice and not ours. Measure it against a real phone before claiming a number.
 
 **Drift correction.** When buffered duration exceeds target plus 2000 ms, drain by dropping to the
 next keyframe and firing a PLI, rather than playing faster — a pass-through relay cannot resample
