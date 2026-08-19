@@ -64,7 +64,14 @@ func (r *Relay) Publish(
 
 	stream.mu.Lock()
 	stream.tracks[kind] = track
-	stream.keyframe = keyframe
+
+	// Only the video track's callback is kept. Audio calls this too, and storing
+	// its callback would point the keyframe request at the audio SSRC, where a
+	// PLI means nothing and no picture ever arrives.
+	if kind == webrtc.RTPCodecTypeVideo {
+		stream.keyframe = keyframe
+	}
+
 	stream.mu.Unlock()
 
 	return track, nil

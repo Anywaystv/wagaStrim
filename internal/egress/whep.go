@@ -105,7 +105,7 @@ func offerReceivesMedia(desc webrtc.SessionDescription) error {
 }
 
 func (s *Server) negotiate(
-	ing *config.Ingest,
+	ing config.Ingest,
 	desc webrtc.SessionDescription,
 	tracks []*webrtc.TrackLocalStaticRTP,
 ) (string, string, error) {

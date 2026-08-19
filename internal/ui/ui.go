@@ -115,11 +115,11 @@ func (s *Server) Serve(ctx context.Context) error {
 }
 
 func (s *Server) handleStats(wri http.ResponseWriter, _ *http.Request) {
-	out := make(map[string]stats.Snapshot, len(s.cfg.Ingests))
+	ingests := s.cfg.List()
+	out := make(map[string]stats.Snapshot, len(ingests))
 
-	for idx := range s.cfg.Ingests {
-		id := s.cfg.Ingests[idx].ID
-		out[id] = s.counters.Of(id)
+	for idx := range ingests {
+		out[ingests[idx].ID] = s.counters.Of(ingests[idx].ID)
 	}
 
 	s.writeJSON(wri, out)
@@ -131,10 +131,8 @@ func (s *Server) handleReachability(wri http.ResponseWriter, req *http.Request) 
 	report := reach.Look(req.Context(), s.cfg.MediaPort, s.cfg.SignalPort)
 
 	// Remember a discovered address so the links stop reading as a placeholder.
-	if report.PublicHost != "" && s.cfg.PublicHost != report.PublicHost {
-		s.cfg.PublicHost = report.PublicHost
-
-		if err := s.cfg.Save(); err != nil {
+	if report.PublicHost != "" {
+		if err := s.cfg.SetPublicHost(report.PublicHost); err != nil {
 			s.log.Warnf("save public host: %v", err)
 		}
 	}
@@ -156,7 +154,7 @@ func (s *Server) handleHealth(wri http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
-	host := s.cfg.PublicHost
+	host := s.cfg.Host()
 	if host == "" {
 		host = "your-public-address"
 	}

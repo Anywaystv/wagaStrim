@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // Delay bounds in milliseconds. The floor is not a default, it is a floor: two
@@ -61,7 +62,33 @@ type Config struct {
 	Autostart  bool     `json:"autostart"`
 	Ingests    []Ingest `json:"ingests"`
 
+	// The settings page mutates this while the public signaling listener reads
+	// it, on separate listeners and separate goroutines.
+	mu   sync.RWMutex
 	path string
+}
+
+// SetPublicHost records a discovered address. The reachability handler writes
+// this while the page renderer and the link builder are reading it.
+func (c *Config) SetPublicHost(host string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.PublicHost == host {
+		return nil
+	}
+
+	c.PublicHost = host
+
+	return c.saveLocked()
+}
+
+// Host returns the public address, or an empty string if none is known yet.
+func (c *Config) Host() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.PublicHost
 }
 
 // Path returns the file this config was loaded from.
@@ -154,6 +181,14 @@ func clampDelay(delayMS int) int {
 // Save writes the config through a temporary file and a rename, so a crash
 // mid-write cannot leave a truncated file behind.
 func (c *Config) Save() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.saveLocked()
+}
+
+// saveLocked is Save for callers that already hold the write lock.
+func (c *Config) saveLocked() error {
 	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
 		return fmt.Errorf("%w: %w", ErrWriteConfig, err)
 	}
@@ -176,21 +211,24 @@ func (c *Config) Save() error {
 }
 
 // AddIngest appends a camera with a fresh key pair and saves.
-func (c *Config) AddIngest(label string) (*Ingest, error) {
+func (c *Config) AddIngest(label string) (Ingest, error) {
 	senderKey, err := newKey(SenderPrefix)
 	if err != nil {
-		return nil, err
+		return Ingest{}, err
 	}
 
 	receiverKey, err := newKey(ReceiverPrefix)
 	if err != nil {
-		return nil, err
+		return Ingest{}, err
 	}
 
 	id, err := newKey("")
 	if err != nil {
-		return nil, err
+		return Ingest{}, err
 	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	c.Ingests = append(c.Ingests, Ingest{
 		ID:          id,
@@ -201,11 +239,14 @@ func (c *Config) AddIngest(label string) (*Ingest, error) {
 		DelayMS:     DelayDefaultMS,
 	})
 
-	return &c.Ingests[len(c.Ingests)-1], c.Save()
+	return c.Ingests[len(c.Ingests)-1], c.saveLocked()
 }
 
 // RemoveIngest drops a camera, revoking both of its keys.
 func (c *Config) RemoveIngest(id string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	for idx := range c.Ingests {
 		if c.Ingests[idx].ID != id {
 			continue
@@ -213,7 +254,7 @@ func (c *Config) RemoveIngest(id string) error {
 
 		c.Ingests = append(c.Ingests[:idx], c.Ingests[idx+1:]...)
 
-		return c.Save()
+		return c.saveLocked()
 	}
 
 	return fmt.Errorf("%w: %s", ErrUnknownIngest, id)
@@ -221,6 +262,9 @@ func (c *Config) RemoveIngest(id string) error {
 
 // SetDelay clamps to the permitted range and saves.
 func (c *Config) SetDelay(id string, delayMS int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	for idx := range c.Ingests {
 		if c.Ingests[idx].ID != id {
 			continue
@@ -228,7 +272,7 @@ func (c *Config) SetDelay(id string, delayMS int) error {
 
 		c.Ingests[idx].DelayMS = clampDelay(delayMS)
 
-		return c.Save()
+		return c.saveLocked()
 	}
 
 	return fmt.Errorf("%w: %s", ErrUnknownIngest, id)
@@ -247,14 +291,17 @@ const (
 // Resolve finds the ingest a key belongs to and which half it is. Every ingest
 // is compared even after a match so the work does not depend on the secret, and
 // each comparison is constant time.
-func (c *Config) Resolve(key string) (*Ingest, Role) {
+func (c *Config) Resolve(key string) (Ingest, Role) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	var (
-		found *Ingest
+		found Ingest
 		role  = RoleNone
 	)
 
 	for idx := range c.Ingests {
-		ing := &c.Ingests[idx]
+		ing := c.Ingests[idx]
 
 		if constantEqual(key, ing.SenderKey) {
 			found, role = ing, RoleSender
@@ -266,6 +313,18 @@ func (c *Config) Resolve(key string) (*Ingest, Role) {
 	}
 
 	return found, role
+}
+
+// List returns a copy of the ingest list. Callers iterate the copy, so a camera
+// added while a page renders cannot move the slice underneath them.
+func (c *Config) List() []Ingest {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	out := make([]Ingest, len(c.Ingests))
+	copy(out, c.Ingests)
+
+	return out
 }
 
 func constantEqual(lhs, rhs string) bool {
