@@ -304,8 +304,11 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 	}
 
 	data := pageData{
-		Ingests:    views,
-		SenderBase: fmt.Sprintf("http://%s:%d/whip/", host, s.cfg.SignalPort),
+		Ingests: views,
+		// Moblin chooses the protocol from the scheme and rewrites whip to http
+		// itself, so it rejects a link that already says http. The line under the
+		// field tells anyone using another WHIP client to put http back.
+		SenderBase: fmt.Sprintf("whip://%s:%d/whip/", host, s.cfg.SignalPort),
 		// The Browser Source path is the default, so the receiver link is the
 		// player page rather than the raw WHEP endpoint. A WHEP client can still
 		// reach /whep/<same key> directly.

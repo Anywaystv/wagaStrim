@@ -17,6 +17,10 @@ import (
 // ErrNegotiate is returned when an offer cannot be turned into an answer.
 var ErrNegotiate = errors.New("cannot negotiate offer")
 
+// bothWays is the direction a media section has when it names none, and the one
+// that satisfies a caller asking about either direction.
+const bothWays = "sendrecv"
+
 // Answer applies an offer and returns a fully gathered answer. Neither endpoint
 // trickles, so gathering completes before the answer goes back.
 func Answer(conn *webrtc.PeerConnection, offer webrtc.SessionDescription) (string, error) {
@@ -54,6 +58,10 @@ func Discard(conn *webrtc.PeerConnection, cause error, log logging.LeveledLogger
 // A WHIP client pointed at a WHEP endpoint, or the reverse, produces an offer
 // facing the wrong way, and catching it here turns a black source into a
 // diagnosis.
+//
+// A media section with no direction attribute is sendrecv, which RFC 4566 makes
+// the default and every sender is entitled to rely on. Requiring the attribute
+// to be spelled out rejected offers that were about to work.
 func Direction(offer webrtc.SessionDescription, wanted string) (bool, error) {
 	parsed, err := offer.Unmarshal()
 	if err != nil {
@@ -61,10 +69,17 @@ func Direction(offer webrtc.SessionDescription, wanted string) (bool, error) {
 	}
 
 	for _, media := range parsed.MediaDescriptions {
+		facing := bothWays
+
 		for _, attr := range media.Attributes {
-			if attr.Key == wanted || attr.Key == "sendrecv" {
-				return true, nil
+			switch attr.Key {
+			case "sendonly", "recvonly", bothWays, "inactive":
+				facing = attr.Key
 			}
+		}
+
+		if facing == wanted || facing == bothWays {
+			return true, nil
 		}
 	}
 
