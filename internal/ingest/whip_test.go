@@ -30,11 +30,7 @@ func newTestServer(t *testing.T) (*Server, *config.Ingest) {
 func newTestServerWithRelay(t *testing.T) (*Server, *config.Ingest, *relay.Relay) {
 	t.Helper()
 
-	cfg := &config.Config{}
-	ing, err := config.NewTestIngest("Chest cam")
-	require.NoError(t, err)
-
-	cfg.Ingests = append(cfg.Ingests, *ing)
+	cfg := &config.Config{Ingests: []config.Ingest{testIngest("Chest cam")}}
 
 	engine, mux, err := NewSettingEngine(0)
 	require.NoError(t, err)
@@ -106,7 +102,7 @@ func TestPublisherMediaReachesTheIngest(t *testing.T) {
 		require.Fail(t, "publisher never connected")
 	}
 
-	session, ok := srv.Session(resource)
+	session, ok := srv.session(resource)
 	require.True(t, ok)
 
 	frame := []byte{0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x01, 0x65, 0x88}
@@ -119,7 +115,7 @@ func TestPublisherMediaReachesTheIngest(t *testing.T) {
 
 	require.NoError(t, srv.Teardown(resource))
 
-	_, still := srv.Session(resource)
+	_, still := srv.session(resource)
 	assert.False(t, still, "teardown must forget the session")
 }
 
@@ -198,7 +194,7 @@ func TestPathIsReportedOnAMediaOnlyConnection(t *testing.T) {
 	require.NoError(t, peer.SetRemoteDescription(
 		webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}))
 
-	session, ok := srv.Session(resource)
+	session, ok := srv.session(resource)
 	require.True(t, ok)
 
 	frame := []byte{0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x01, 0x65, 0x88}
@@ -211,4 +207,17 @@ func TestPathIsReportedOnAMediaOnlyConnection(t *testing.T) {
 
 	assert.NotEmpty(t, srv.stats.Of(ing.ID).Path,
 		"a connected publisher must report the path carrying it")
+}
+
+// testIngest builds a camera with fixed keys. Real randomness buys a test
+// nothing and a readable key makes a failure easier to place.
+func testIngest(label string) config.Ingest {
+	return config.Ingest{
+		ID:          "cam-" + label,
+		Label:       label,
+		SenderKey:   config.SenderPrefix + "00000000000000000000000000000001",
+		ReceiverKey: config.ReceiverPrefix + "00000000000000000000000000000002",
+		Codecs:      []string{config.CodecH264},
+		DelayMS:     config.DelayDefaultMS,
+	}
 }

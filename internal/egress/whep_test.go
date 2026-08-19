@@ -20,13 +20,10 @@ import (
 )
 
 // pipeline builds the whole path: publisher, relay, subscriber.
-func pipeline(t *testing.T) (*ingest.Server, *egress.Server, *config.Ingest, *relay.Relay) {
+func pipeline(t *testing.T) (*ingest.Server, *egress.Server, *config.Ingest) {
 	t.Helper()
 
-	ing, err := config.NewTestIngest("Chest cam")
-	require.NoError(t, err)
-
-	cfg := &config.Config{Ingests: []config.Ingest{*ing}}
+	cfg := &config.Config{Ingests: []config.Ingest{testIngest("Chest cam")}}
 
 	engine, mux, err := ingest.NewSettingEngine(0)
 	require.NoError(t, err)
@@ -42,7 +39,7 @@ func pipeline(t *testing.T) (*ingest.Server, *egress.Server, *config.Ingest, *re
 	whep := egress.NewServer(cfg, log, whip.API(), hub)
 	t.Cleanup(whep.Close)
 
-	return whip, whep, &cfg.Ingests[0], hub
+	return whip, whep, &cfg.Ingests[0]
 }
 
 func gather(t *testing.T, peer *webrtc.PeerConnection) string {
@@ -85,21 +82,29 @@ func startPublisher(t *testing.T, whip *ingest.Server, ing *config.Ingest) func(
 	}
 }
 
-// waitLive blocks until the publisher's track has reached the relay. Media only
-// registers after ICE completes and the first packet lands.
-func waitLive(t *testing.T, hub *relay.Relay, ing *config.Ingest, writeFrame func()) {
+// waitLive blocks until a subscriber can attach, which is the condition every
+// test here depends on. Media only reaches the relay after ICE completes and
+// the first packet lands.
+func waitLive(t *testing.T, whep *egress.Server, ing *config.Ingest, writeFrame func()) {
 	t.Helper()
 
 	require.Eventually(t, func() bool {
 		writeFrame()
 
-		return hub.Live(ing.ID)
-	}, 20*time.Second, 100*time.Millisecond, "publisher never reached the relay")
+		_, resource, err := whep.Subscribe(ing.ReceiverKey, recvOffer(t))
+		if err != nil {
+			return false
+		}
+
+		_ = whep.Teardown(resource)
+
+		return true
+	}, 20*time.Second, 200*time.Millisecond, "publisher never reached the relay")
 }
 
 func TestMediaReachesASubscriber(t *testing.T) {
-	whip, whep, ing, hub := pipeline(t)
-	waitLive(t, hub, ing, startPublisher(t, whip, ing))
+	whip, whep, ing := pipeline(t)
+	waitLive(t, whep, ing, startPublisher(t, whip, ing))
 
 	_, resource, err := whep.Subscribe(ing.ReceiverKey, recvOffer(t))
 	require.NoError(t, err)
@@ -108,7 +113,7 @@ func TestMediaReachesASubscriber(t *testing.T) {
 }
 
 func TestSubscriberReceivesPackets(t *testing.T) {
-	whip, whep, ing, hub := pipeline(t)
+	whip, whep, ing := pipeline(t)
 	writeFrame := startPublisher(t, whip, ing)
 
 	viewer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
@@ -126,7 +131,7 @@ func TestSubscriberReceivesPackets(t *testing.T) {
 		}
 	})
 
-	waitLive(t, hub, ing, writeFrame)
+	waitLive(t, whep, ing, writeFrame)
 
 	answer, _, err := whep.Subscribe(ing.ReceiverKey, gather(t, viewer))
 	require.NoError(t, err)
@@ -173,22 +178,22 @@ func recvOffer(t *testing.T) string {
 }
 
 func TestSenderKeyAtWhepIsRefused(t *testing.T) {
-	_, whep, ing, _ := pipeline(t)
+	_, whep, ing := pipeline(t)
 
 	_, _, err := whep.Subscribe(ing.SenderKey, recvOffer(t))
 	assert.ErrorIs(t, err, egress.ErrWrongRole, "the Moblin link must not subscribe")
 }
 
 func TestSubscribingToAnIdleIngestSaysSo(t *testing.T) {
-	_, whep, ing, _ := pipeline(t)
+	_, whep, ing := pipeline(t)
 
 	_, _, err := whep.Subscribe(ing.ReceiverKey, recvOffer(t))
 	assert.ErrorIs(t, err, egress.ErrOffline, "an idle camera is not a negotiation failure")
 }
 
 func TestSendonlyOfferIsRefused(t *testing.T) {
-	whip, whep, ing, hub := pipeline(t)
-	waitLive(t, hub, ing, startPublisher(t, whip, ing))
+	whip, whep, ing := pipeline(t)
+	waitLive(t, whep, ing, startPublisher(t, whip, ing))
 
 	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	require.NoError(t, err)
@@ -208,4 +213,17 @@ func TestPlayerPageCarriesNoConfiguration(t *testing.T) {
 
 	assert.Contains(t, string(page), "/player/", "the page derives its endpoint from its own path")
 	assert.NotContains(t, string(page), "s_", "no sender key may appear in a page served to viewers")
+}
+
+// testIngest builds a camera with fixed keys. Real randomness buys a test
+// nothing and a readable key makes a failure easier to place.
+func testIngest(label string) config.Ingest {
+	return config.Ingest{
+		ID:          "cam-" + label,
+		Label:       label,
+		SenderKey:   config.SenderPrefix + "00000000000000000000000000000001",
+		ReceiverKey: config.ReceiverPrefix + "00000000000000000000000000000002",
+		Codecs:      []string{config.CodecH264},
+		DelayMS:     config.DelayDefaultMS,
+	}
 }

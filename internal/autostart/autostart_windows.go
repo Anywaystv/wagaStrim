@@ -14,14 +14,15 @@ import (
 // runKey is the per-user Run key. It needs no administrator rights, which the
 // machine-wide equivalent under HKLM would.
 const (
-	runKey     = `Software\Microsoft\Windows\CurrentVersion\Run`
-	valueName  = "wagaStrim"
-	headlessOn = ` -headless`
+	runKey    = `Software\Microsoft\Windows\CurrentVersion\Run`
+	valueName = "wagaStrim"
 )
 
+// Windows keeps the tray: unlike the headless Linux unit, a Windows machine
+// running this is the streaming PC and has a desktop to put an icon on.
+
 // Status reports whether the Run value exists and still points at this binary.
-func Status(ctx context.Context) State {
-	_ = ctx
+func Status(_ context.Context) State {
 
 	key, err := registry.OpenKey(registry.CURRENT_USER, runKey, registry.QUERY_VALUE)
 	if err != nil {
@@ -45,8 +46,7 @@ func Status(ctx context.Context) State {
 
 // Enable writes the Run value, quoting the path so a space in it does not split
 // the command.
-func Enable(ctx context.Context) error {
-	_ = ctx
+func Enable(_ context.Context) error {
 
 	binary, err := binaryPath()
 	if err != nil {
@@ -68,8 +68,7 @@ func Enable(ctx context.Context) error {
 }
 
 // Disable removes the value. A missing value is already the wanted state.
-func Disable(ctx context.Context) error {
-	_ = ctx
+func Disable(_ context.Context) error {
 
 	key, err := registry.OpenKey(registry.CURRENT_USER, runKey, registry.SET_VALUE)
 	if err != nil {

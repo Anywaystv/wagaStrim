@@ -104,7 +104,7 @@ func TestDriftCorrectionSkipsToAKeyframe(t *testing.T) {
 		buf.Push(packet(seq, uint32(seq)*testClock, interFrame()...))
 	}
 
-	assert.Greater(t, buf.Depth(), 50*time.Millisecond+hysteresis, "the buffer should be overfull")
+	assert.Greater(t, buf.depth(), 50*time.Millisecond+hysteresis, "the buffer should be overfull")
 	require.True(t, buf.Correct(), "drift past the hysteresis must trigger a correction")
 
 	select {

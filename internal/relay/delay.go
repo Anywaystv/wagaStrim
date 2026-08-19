@@ -168,11 +168,11 @@ func (b *Buffer) waitUntilLocked(wait time.Duration) {
 	b.ready.Wait()
 }
 
-// Depth is how far ahead of now the newest queued packet is scheduled. It sits
+// depth is how far ahead of now the newest queued packet is scheduled. It sits
 // at roughly the target while the link is healthy. Growing past target plus
 // hysteresis means media is arriving faster than its timestamps say it should,
 // which no amount of waiting will resolve.
-func (b *Buffer) Depth() time.Duration {
+func (b *Buffer) depth() time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 

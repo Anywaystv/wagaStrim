@@ -170,16 +170,6 @@ func (r *Relay) Retarget(ingestID string, target time.Duration) {
 	}
 }
 
-// Live reports whether an ingest currently has a publisher.
-func (r *Relay) Live(ingestID string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	_, ok := r.streams[ingestID]
-
-	return ok
-}
-
 // Drop removes a stream when its publisher goes away. Subscribers stay attached
 // to a silent track rather than being torn down, so a publisher reconnecting
 // does not force every OBS source to be re-added.
