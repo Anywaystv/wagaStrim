@@ -46,7 +46,7 @@ func TestARealPublisherEstablishesPairs(t *testing.T) {
 	require.NoError(t, peer.SetRemoteDescription(
 		webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}))
 
-	session, ok := srv.Session(resource)
+	session, ok := srv.session(resource)
 	require.True(t, ok)
 
 	frame := []byte{0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x01, 0x65, 0x88}

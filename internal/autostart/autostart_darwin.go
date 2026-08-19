@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -25,7 +24,7 @@ func plistPath() (string, error) {
 }
 
 // Status reports whether a LaunchAgent exists and still points at this binary.
-func Status(ctx context.Context) State {
+func Status(_ context.Context) State {
 	path, err := plistPath()
 	if err != nil {
 		return State{}
@@ -40,8 +39,6 @@ func Status(ctx context.Context) State {
 	if err != nil {
 		return State{On: true, Stale: true}
 	}
-
-	_ = ctx
 
 	return State{On: true, Stale: !strings.Contains(string(body), want)}
 }
@@ -111,13 +108,4 @@ func plist(binary string) string {
 </dict>
 </plist>
 `
-}
-
-func run(ctx context.Context, name string, args ...string) error {
-	// #nosec G204 -- name is a literal and args are paths this process built.
-	if err := exec.CommandContext(ctx, name, args...).Run(); err != nil {
-		return fmt.Errorf("%w: %s: %w", ErrRegister, name, err)
-	}
-
-	return nil
 }

@@ -465,8 +465,8 @@ func (s *Server) Teardown(resource string) error {
 	return nil
 }
 
-// Session looks up a live session by resource id.
-func (s *Server) Session(resource string) (*Session, bool) {
+// session looks up a live session by resource id.
+func (s *Server) session(resource string) (*Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
