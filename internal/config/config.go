@@ -260,6 +260,105 @@ func (c *Config) RemoveIngest(id string) error {
 	return fmt.Errorf("%w: %s", ErrUnknownIngest, id)
 }
 
+// EffectiveDelay is the target a camera actually plays out at. Members of a sync
+// group share one target, the largest any member needs, so two cameras on
+// screen together do not drift apart. The worst path sets the pace, which is the
+// only way they stay aligned.
+func (c *Config) EffectiveDelay(id string) int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	own, group := 0, ""
+
+	for idx := range c.Ingests {
+		if c.Ingests[idx].ID == id {
+			own, group = c.Ingests[idx].DelayMS, c.Ingests[idx].SyncGroup
+
+			break
+		}
+	}
+
+	if group == "" {
+		return own
+	}
+
+	for idx := range c.Ingests {
+		if c.Ingests[idx].SyncGroup == group && c.Ingests[idx].DelayMS > own {
+			own = c.Ingests[idx].DelayMS
+		}
+	}
+
+	return own
+}
+
+// GroupPeers lists every camera sharing a target with this one, itself included.
+// Changing one member's delay has to retarget the rest.
+func (c *Config) GroupPeers(id string) []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	group := ""
+
+	for idx := range c.Ingests {
+		if c.Ingests[idx].ID == id {
+			group = c.Ingests[idx].SyncGroup
+
+			break
+		}
+	}
+
+	if group == "" {
+		return []string{id}
+	}
+
+	peers := make([]string, 0, len(c.Ingests))
+
+	for idx := range c.Ingests {
+		if c.Ingests[idx].SyncGroup == group {
+			peers = append(peers, c.Ingests[idx].ID)
+		}
+	}
+
+	return peers
+}
+
+// SetSyncGroup moves a camera into a named group, or out of one when empty.
+func (c *Config) SetSyncGroup(id, group string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for idx := range c.Ingests {
+		if c.Ingests[idx].ID != id {
+			continue
+		}
+
+		c.Ingests[idx].SyncGroup = group
+
+		return c.saveLocked()
+	}
+
+	return fmt.Errorf("%w: %s", ErrUnknownIngest, id)
+}
+
+// SetLabel renames a camera. The label is how someone tells four masked links
+// apart, so it has to be editable after the fact.
+func (c *Config) SetLabel(id, label string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for idx := range c.Ingests {
+		if c.Ingests[idx].ID != id {
+			continue
+		}
+
+		c.Ingests[idx].Label = label
+
+		return c.saveLocked()
+	}
+
+	return fmt.Errorf("%w: %s", ErrUnknownIngest, id)
+}
+
 // SetDelay clamps to the permitted range and saves.
 func (c *Config) SetDelay(id string, delayMS int) error {
 	c.mu.Lock()

@@ -12,6 +12,7 @@ import (
 	signalpkg "os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
 	"github.com/MarcFryd/wagaStrim/internal/egress"
@@ -50,8 +51,23 @@ func run(headless bool, log logging.LeveledLogger) error {
 	log.Infof("config %s", cfg.Path())
 
 	counters := stats.New()
+	hub := relay.New()
 
-	srv, err := ui.New(cfg, log, counters)
+	// Wired after the servers exist; the UI only calls these from handlers.
+	var (
+		whip *ingest.Server
+		whep *egress.Server
+	)
+
+	revoke := func(id string) {
+		whip.CloseIngest(id)
+		whep.CloseIngest(id)
+	}
+	retarget := func(id string, delayMS int) {
+		hub.Retarget(id, time.Duration(delayMS)*time.Millisecond)
+	}
+
+	srv, err := ui.New(cfg, log, counters, revoke, retarget)
 	if err != nil {
 		return err
 	}
@@ -67,16 +83,14 @@ func run(headless bool, log logging.LeveledLogger) error {
 		}
 	}()
 
-	hub := relay.New()
-
-	whip, err := ingest.NewServer(cfg, log, engine, hub, counters)
+	whip, err = ingest.NewServer(cfg, log, engine, hub, counters)
 	if err != nil {
 		return err
 	}
 
 	defer whip.Close()
 
-	whep := egress.NewServer(cfg, log, whip.API(), hub)
+	whep = egress.NewServer(cfg, log, whip.API(), hub)
 	defer whep.Close()
 
 	public := signal.New(cfg, log, whip, whep)

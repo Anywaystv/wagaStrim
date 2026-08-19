@@ -36,23 +36,42 @@ type Server struct {
 	tpl      *template.Template
 	http     *http.Server
 	counters *stats.Registry
+
+	// Set by main. Deleting a camera has to disconnect whatever is using it, and
+	// a delay change has to reach the buffers already running.
+	revoke   func(ingestID string)
+	retarget func(ingestID string, delayMS int)
 }
 
 // pageData is what the template sees.
 type pageData struct {
-	Ingests      []config.Ingest
+	Ingests      []cameraView
 	SenderBase   string
 	ReceiverBase string
 }
 
+// cameraView pairs a camera with the target it actually plays out at. In a sync
+// group that is the slowest member's, not its own, and showing only the stored
+// value would put a number on screen that is not the one in effect.
+type cameraView struct {
+	config.Ingest
+	Effective int
+}
+
 // New compiles the page and wires the routes.
-func New(cfg *config.Config, log logging.LeveledLogger, counters *stats.Registry) (*Server, error) {
+func New(
+	cfg *config.Config,
+	log logging.LeveledLogger,
+	counters *stats.Registry,
+	revoke func(string),
+	retarget func(string, int),
+) (*Server, error) {
 	tpl, err := template.ParseFS(assets, "web/index.html")
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrParseTemplate, err)
 	}
 
-	srv := &Server{cfg: cfg, log: log, tpl: tpl, counters: counters}
+	srv := &Server{cfg: cfg, log: log, tpl: tpl, counters: counters, revoke: revoke, retarget: retarget}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", srv.handleHealth)
@@ -61,6 +80,8 @@ func New(cfg *config.Config, log logging.LeveledLogger, counters *stats.Registry
 	mux.HandleFunc("POST /api/ingests/remove", srv.handleRemove)
 	mux.HandleFunc("POST /api/ingests/delay", srv.handleDelay)
 	mux.HandleFunc("GET /api/stats", srv.handleStats)
+	mux.HandleFunc("POST /api/ingests/group", srv.handleGroup)
+	mux.HandleFunc("POST /api/ingests/label", srv.handleLabel)
 	mux.HandleFunc("GET /api/reachability", srv.handleReachability)
 	static, err := fs.Sub(assets, "web")
 	if err != nil {
@@ -159,8 +180,15 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 		host = "your-public-address"
 	}
 
+	cams := s.cfg.List()
+	views := make([]cameraView, len(cams))
+
+	for idx, cam := range cams {
+		views[idx] = cameraView{Ingest: cam, Effective: s.cfg.EffectiveDelay(cam.ID)}
+	}
+
 	data := pageData{
-		Ingests:    s.cfg.Ingests,
+		Ingests:    views,
 		SenderBase: fmt.Sprintf("http://%s:%d/whip/", host, s.cfg.SignalPort),
 		// The Browser Source path is the default, so the receiver link is the
 		// player page rather than the raw WHEP endpoint. A WHEP client can still
@@ -212,6 +240,8 @@ func (s *Server) handleRemove(wri http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	s.revoke(body.ID)
+
 	wri.WriteHeader(http.StatusNoContent)
 }
 
@@ -228,6 +258,66 @@ func (s *Server) handleDelay(wri http.ResponseWriter, req *http.Request) {
 	}
 
 	if err := s.cfg.SetDelay(body.ID, body.DelayMS); err != nil {
+		s.fail(wri, http.StatusNotFound, err)
+
+		return
+	}
+
+	s.applyDelay(body.ID)
+	wri.WriteHeader(http.StatusNoContent)
+}
+
+// applyDelay pushes the effective target to every camera sharing this one's
+// group, since raising one member raises the whole group.
+func (s *Server) applyDelay(id string) {
+	for _, peer := range s.cfg.GroupPeers(id) {
+		s.retarget(peer, s.cfg.EffectiveDelay(peer))
+	}
+}
+
+func (s *Server) handleGroup(wri http.ResponseWriter, req *http.Request) {
+	var body struct {
+		ID    string `json:"id"`
+		Group string `json:"group"`
+	}
+
+	if err := decode(req, &body); err != nil {
+		s.fail(wri, http.StatusBadRequest, err)
+
+		return
+	}
+
+	// Peers of the group being left also need retargeting: losing the slowest
+	// member should let the rest speed back up.
+	former := s.cfg.GroupPeers(body.ID)
+
+	if err := s.cfg.SetSyncGroup(body.ID, body.Group); err != nil {
+		s.fail(wri, http.StatusNotFound, err)
+
+		return
+	}
+
+	for _, peer := range former {
+		s.retarget(peer, s.cfg.EffectiveDelay(peer))
+	}
+
+	s.applyDelay(body.ID)
+	wri.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleLabel(wri http.ResponseWriter, req *http.Request) {
+	var body struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
+	}
+
+	if err := decode(req, &body); err != nil {
+		s.fail(wri, http.StatusBadRequest, err)
+
+		return
+	}
+
+	if err := s.cfg.SetLabel(body.ID, body.Label); err != nil {
 		s.fail(wri, http.StatusNotFound, err)
 
 		return

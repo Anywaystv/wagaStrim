@@ -302,12 +302,14 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 	}
 
 	buf := relay.NewBuffer(
-		time.Duration(ing.DelayMS)*time.Millisecond,
+		time.Duration(s.cfg.EffectiveDelay(ing.ID))*time.Millisecond,
 		track.Codec().ClockRate,
 		track.Codec().MimeType,
 		askKeyframe,
 	)
 	defer buf.Close()
+
+	s.relay.Track(ing.ID, buf)
 
 	go relay.Feed(out, buf, func(err error) { s.log.Warnf("ingest %s: forward: %v", ing.Label, err) })
 
@@ -337,6 +339,22 @@ func (s *Server) requestKeyframe(peer *webrtc.PeerConnection, ssrc webrtc.SSRC) 
 	err := peer.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(ssrc)}})
 	if err != nil {
 		s.log.Warnf("keyframe request: %v", err)
+	}
+}
+
+// CloseIngest ends whatever is publishing to one camera. Deleting a camera has
+// to disconnect it, or a revoked key keeps working until the phone gives up.
+func (s *Server) CloseIngest(ingestID string) {
+	s.mu.Lock()
+	resource, ok := s.byIngest[ingestID]
+	s.mu.Unlock()
+
+	if !ok {
+		return
+	}
+
+	if err := s.Teardown(resource); err != nil {
+		s.log.Warnf("close ingest %s: %v", ingestID, err)
 	}
 }
 
