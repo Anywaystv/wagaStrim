@@ -120,6 +120,7 @@ async function poll() {
     const parts = [`${snap.bitrateKbps} kbps`, `up ${snap.liveSeconds}s`];
     if (snap.path) parts.push(snap.path);
     if (snap.switches) parts.push(`${snap.switches} network ${snap.switches === 1 ? "change" : "changes"}`);
+    if (snap.pathsTotal) parts.push(`${snap.pathsLive}/${snap.pathsTotal} paths usable`);
     if (snap.late) parts.push(`${snap.late} late`);
     if (snap.dropped) parts.push(`${snap.dropped} dropped`);
 

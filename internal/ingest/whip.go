@@ -352,6 +352,14 @@ func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 
 	s.watchPath(ing, peer)
 
+	// Failed and Closed can both arrive, so the stop signal has to tolerate
+	// being fired twice. pion happens to serialize these callbacks today, which
+	// is not a property worth depending on.
+	done := make(chan struct{})
+	stopPairs := sync.OnceFunc(func() { close(done) })
+
+	go s.watchPairs(ing.ID, peer, done)
+
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		s.log.Infof("ingest %s: %s", ing.Label, state)
 
@@ -359,6 +367,7 @@ func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 		case webrtc.PeerConnectionStateConnected:
 			s.stats.Publishing(ing.ID)
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			stopPairs()
 			s.stats.Stopped(ing.ID)
 			s.relay.Drop(ing.ID)
 			s.forget(session.Resource)

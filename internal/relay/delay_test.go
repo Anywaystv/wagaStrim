@@ -303,3 +303,23 @@ func TestUntrackForgetsAClosedBuffer(t *testing.T) {
 
 	assert.Zero(t, held, "twenty reconnects must not leave twenty dead buffers")
 }
+
+// Bonded paths arrive out of order by the skew between them, which the replay
+// window has to tolerate. A packet a full second behind its neighbor still has
+// to land in its slot rather than be treated as a stray.
+func TestBondedSkewIsAbsorbed(t *testing.T) {
+	buf := NewBuffer(2*time.Second, testClock, "video/H264", nil)
+	defer buf.Close()
+
+	// Fast path delivers frames 1 and 3; the slow path's frame 2 lands after both.
+	buf.Push(packet(1, 0, idr()...))
+	buf.Push(packet(3, 6000, interFrame()...))
+	buf.Push(packet(2, 3000, interFrame()...))
+
+	for _, want := range []uint16{1, 2, 3} {
+		got, ok := buf.Pop()
+		require.True(t, ok)
+		assert.Equal(t, want, got.SequenceNumber,
+			"a packet from the slower bonded path must still sort into place")
+	}
+}
