@@ -1,0 +1,85 @@
+/* Tokens carried over from Anyways-BotGateway: warm paper, hairline rules, restrained pink accent. */
+:root {
+  color-scheme: light dark;
+  --bg: #faf9f5; --panel: #fffefb; --panel-sunken: #f4f2ec;
+  --line: #e4e1d9; --line-strong: #d2cec3; --text: #141413; --muted: #63615c;
+  --accent: #c8477e; --accent-text: #a83263; --accent-soft: #fbe7f0;
+  --accent-soft-hover: #f7d8e6; --accent-soft-line: #f0c4da;
+  --danger: #9a3a3a; --ok: #47734b; --warn: #916719;
+  --radius: 5px; --radius-lg: 8px; --shadow: 0 1px 2px color-mix(in srgb, #000 7%, transparent);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#1f1e1d; --panel:#262624; --panel-sunken:#201f1e; --line:#393835; --line-strong:#4a4844;
+    --text:#f2f0ea; --muted:#a9a59c; --accent:#e86fa8; --accent-text:#ee8fbc;
+    --accent-soft:#3b2531; --accent-soft-hover:#4a2d3d; --accent-soft-line:#5c3a4b;
+    --danger:#e07a7a; --ok:#8bc391; --warn:#e6bd68;
+  }
+}
+* { box-sizing: border-box }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+header {
+  display: flex; align-items: center; gap: 1rem; padding: .75rem 1.5rem;
+  border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.wordmark { font-weight: 750; letter-spacing: -.02em }
+.wordmark span { color: var(--muted); font-weight: 520 }
+.header-end { margin-left: auto; display: flex; align-items: center; gap: .65rem }
+main { max-width: 54rem; margin: 0 auto; padding: 1.5rem }
+h2 { margin: 0 0 .2rem; font-size: 1rem; letter-spacing: -.01em }
+.card {
+  padding: 1.1rem 1.25rem; margin-bottom: 1rem; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow);
+}
+.row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap }
+.row.between { justify-content: space-between }
+.field { margin-top: .9rem }
+.field > label { display: block; margin-bottom: .25rem; color: var(--muted); font-size: .76rem }
+.button {
+  display: inline-flex; align-items: center; justify-content: center; gap: .35rem;
+  min-height: 2.25rem; padding: .25rem .65rem; border: 1px solid var(--accent-soft-line);
+  border-radius: var(--radius); background: var(--accent-soft); color: var(--accent-text);
+  cursor: pointer; font: inherit; font-size: .8rem; text-decoration: none;
+}
+.button:hover { background: var(--accent-soft-hover); border-color: var(--accent) }
+.button.quiet { background: var(--panel-sunken); border-color: var(--line-strong); color: var(--muted) }
+.button.quiet:hover { color: var(--danger); border-color: var(--danger) }
+.secret {
+  flex: 1; min-width: 12rem; padding: .55rem .7rem; background: var(--panel-sunken);
+  border: 1px solid var(--line); border-radius: var(--radius); overflow-wrap: anywhere;
+  font: .82rem/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+}
+.secret.masked { color: var(--muted); letter-spacing: .12em }
+.status-button {
+  display: inline-flex; align-items: center; gap: .38rem; min-width: 5.4rem;
+  padding: .28rem .62rem; border: 1px solid var(--line-strong); border-radius: 999px;
+  background: var(--panel-sunken); font-size: .72rem; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .045em;
+}
+.status-button::before {
+  content: ""; width: .43rem; height: .43rem; border-radius: 50%; background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent);
+}
+.status-button.good { border-color: color-mix(in srgb, var(--ok) 65%, var(--line)); color: var(--ok) }
+.status-button.warn { border-color: color-mix(in srgb, var(--warn) 65%, var(--line)); color: var(--warn) }
+input[type=text] {
+  padding: .4rem .55rem; border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--panel); color: var(--text); font: inherit; font-size: .9rem;
+}
+input[type=range] { flex: 1; min-width: 10rem; accent-color: var(--accent) }
+input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+.muted { color: var(--muted); font-size: .78rem }
+.pill {
+  padding: .08rem .4rem; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel-sunken); color: var(--muted); font-size: .72rem;
+}
+.notice {
+  padding: .7rem .9rem; margin-bottom: 1rem; border: 1px solid var(--accent-soft-line);
+  border-radius: var(--radius); background: var(--accent-soft); color: var(--accent-text);
+  font-size: .82rem;
+}
+.empty { padding: 2rem 1rem; text-align: center; color: var(--muted) }

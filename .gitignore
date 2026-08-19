@@ -1,0 +1,8 @@
+CLAUDE.md
+.claude/
+.serena/
+*.local.md
+.DS_Store
+/bin/
+/dist/
+config.json
