@@ -56,6 +56,16 @@ const (
 	minMargin  = 250 * time.Millisecond
 )
 
+// resetCeiling is the depth at which a buffer stops being polite. The skip below
+// is the graceful correction and it depends on the publisher answering a
+// keyframe request; when that answer never comes -- a lost PLI, an encoder on a
+// long GOP, a link delivering faster than its timestamps claim -- the queue goes
+// on growing and every packet plays out further behind than the one before it.
+// Past this the queue is dropped on the spot rather than held for a keyframe
+// that may not arrive: ten seconds is already several times any delay this
+// product offers, so there is nothing left in there worth playing.
+const resetCeiling = 10 * time.Second
+
 // correctionMargin is how far past its target a buffer may drift before it
 // skips. It follows the target rather than being a constant, because what counts
 // as drift at two seconds is the whole buffer at three hundred milliseconds.
@@ -227,16 +237,38 @@ func (b *Buffer) depthLocked() time.Duration {
 // playing faster. A pass-through relay cannot resample video, and speeding audio
 // pitches it, so one clean skip beats sustained distortion. Reports whether a
 // correction started.
+//
+// Past resetCeiling it stops waiting for that keyframe and empties the queue,
+// which is the only correction that cannot be refused by a publisher that never
+// sends one. Asking again matters as much as the drop: a skip already in flight
+// means the first request went unanswered, and the buffer would otherwise sit at
+// ten seconds behind for as long as the encoder felt like it.
 func (b *Buffer) Correct() bool {
 	b.mu.Lock()
 
-	if b.catchUp || b.depthLocked() <= b.target+correctionMargin(b.target) {
+	depth := b.depthLocked()
+	started := false
+
+	switch {
+	case depth > resetCeiling:
+		b.dropAllLocked()
+		b.catchUp = true
+		started = true
+	case b.catchUp:
+		// A skip is already running, and its queue cannot grow past the ceiling:
+		// inter frames are dropped while catching up, so depth reads zero here.
+		// What does happen is nothing at all — the request went unanswered and the
+		// picture stays frozen on the last frame that played. Asking once a second
+		// costs one PLI and is the only thing that ends it.
+	case depth <= b.target+correctionMargin(b.target):
 		b.mu.Unlock()
 
 		return false
+	default:
+		b.catchUp = true
+		started = true
 	}
 
-	b.catchUp = true
 	ask := b.keyframe
 	b.mu.Unlock()
 
@@ -244,7 +276,7 @@ func (b *Buffer) Correct() bool {
 		ask()
 	}
 
-	return true
+	return started
 }
 
 func (b *Buffer) dropAllLocked() {
