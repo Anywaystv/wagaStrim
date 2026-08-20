@@ -17,6 +17,12 @@ import (
 // this is noise; slower and a growing buffer takes too long to notice.
 const correctionInterval = time.Second
 
+// keyframeInterval is the shortest gap between two keyframe requests to one
+// publisher. A receiver losing packets asks on every damaged frame, and a phone
+// answering each of those emits nothing but IDRs, which is the worst thing to do
+// to a link that is already short of bandwidth.
+const keyframeInterval = 500 * time.Millisecond
+
 // Stream is the live media of one ingest.
 type Stream struct {
 	mu sync.RWMutex
@@ -27,7 +33,24 @@ type Stream struct {
 	// keyframe asks the publisher for an IDR. A subscriber joining mid-stream
 	// otherwise shows nothing until the encoder happens to emit one, which on a
 	// long GOP is seconds of black.
-	keyframe func()
+	keyframe     func()
+	lastKeyframe time.Time
+}
+
+func (s *Stream) askKeyframe() {
+	s.mu.Lock()
+
+	ask := s.keyframe
+	if ask == nil || time.Since(s.lastKeyframe) < keyframeInterval {
+		s.mu.Unlock()
+
+		return
+	}
+
+	s.lastKeyframe = time.Now()
+	s.mu.Unlock()
+
+	ask()
 }
 
 // Relay holds one stream per publishing ingest.
@@ -79,7 +102,7 @@ func (r *Relay) Publish(
 }
 
 // Subscribe returns the tracks a receiver should attach, and asks the publisher
-// for a keyframe so the picture appears immediately rather than at the next IDR.
+// for a keyframe.
 func (r *Relay) Subscribe(ingestID string) ([]*webrtc.TrackLocalStaticRTP, error) {
 	r.mu.RLock()
 	stream, ok := r.streams[ingestID]
@@ -96,18 +119,28 @@ func (r *Relay) Subscribe(ingestID string) ([]*webrtc.TrackLocalStaticRTP, error
 		tracks = append(tracks, track)
 	}
 
-	keyframe := stream.keyframe
 	stream.mu.RUnlock()
 
 	if len(tracks) == 0 {
 		return nil, ErrNotPublishing
 	}
 
-	if keyframe != nil {
-		keyframe()
-	}
+	stream.askKeyframe()
 
 	return tracks, nil
+}
+
+// Keyframe passes a receiver's request for an IDR back to the publisher.
+func (r *Relay) Keyframe(ingestID string) {
+	r.mu.RLock()
+	stream, ok := r.streams[ingestID]
+	r.mu.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	stream.askKeyframe()
 }
 
 // Track registers a running buffer so a delay change can reach it. A camera in a

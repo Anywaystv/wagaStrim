@@ -298,7 +298,7 @@ func (b *Buffer) Correct() bool {
 	case b.catchUp:
 		// A skip is already running, and its queue cannot grow past the ceiling:
 		// inter frames are dropped while catching up, so depth reads zero here.
-		// What does happen is nothing at all — the request went unanswered and the
+		// What does happen is nothing at all. The request went unanswered and the
 		// picture stays frozen on the last frame that played. Asking once a second
 		// costs one PLI and is the only thing that ends it.
 	case depth <= b.target+correctionMargin(b.target):

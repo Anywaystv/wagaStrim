@@ -14,6 +14,7 @@ import (
 	peerpkg "github.com/MarcFryd/wagaStrim/internal/peer"
 	"github.com/MarcFryd/wagaStrim/internal/relay"
 	"github.com/pion/logging"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -107,9 +108,9 @@ func (s *Server) negotiate(
 			return "", "", peerpkg.Discard(peer, fmt.Errorf("%w: add track: %w", ErrBadOffer, addErr), s.log)
 		}
 
-		// RTCP from the subscriber has to be read or it backs up. Nothing acts on
-		// it yet; phase 8 surfaces it as per-subscriber stats.
-		go drainRTCP(sender)
+		// RTCP from the subscriber has to be read or it backs up, and it is also
+		// where a receiver says its picture is broken.
+		go s.drainRTCP(sender, ing.ID)
 	}
 
 	answer, err := peerpkg.Answer(peer, desc)
@@ -139,12 +140,32 @@ func (s *Server) negotiate(
 	return answer, resource, nil
 }
 
-func drainRTCP(sender *webrtc.RTPSender) {
+// drainRTCP consumes a subscriber's RTCP and passes its keyframe requests back
+// to the publisher. A receiver that has lost a frame asks the endpoint it is
+// attached to, which is this one, and the phone is the only endpoint that can
+// answer. The rest is read and discarded, because an unread stream backs up.
+//
+// Malformed RTCP is dropped in silence. The receiver link is handed to other
+// people, so anything logged per packet here is log volume a stranger controls.
+func (s *Server) drainRTCP(sender *webrtc.RTPSender, ingestID string) {
 	buf := make([]byte, 1500)
 
 	for {
-		if _, _, err := sender.Read(buf); err != nil {
+		read, _, err := sender.Read(buf)
+		if err != nil {
 			return
+		}
+
+		packets, err := rtcp.Unmarshal(buf[:read])
+		if err != nil {
+			continue
+		}
+
+		for _, packet := range packets {
+			switch packet.(type) {
+			case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+				s.relay.Keyframe(ingestID)
+			}
 		}
 	}
 }
