@@ -39,6 +39,21 @@ type Buffer struct {
 	catchUp  bool
 	keyframe func()
 
+	// Pacing. Every packet of a frame carries one timestamp, so without this the
+	// whole frame becomes due at the same instant and leaves as one burst -- a
+	// measured 96 packets back to back, then nothing for 33ms. A receiver on a
+	// shared radio queues that clump, drains it late, and plays the result frame
+	// by frame. paceRate is bytes a second, learned from what arrives rather than
+	// configured, and zero until a rate has been measured: a buffer that has not
+	// seen a second of media yet paces nothing.
+	// arrived counts pushes, which is what orders packets that are due together.
+	arrived uint64
+
+	bytesIn  uint64
+	paceAt   time.Time
+	paceRate float64
+	nextSlot time.Time
+
 	late    uint64
 	dropped uint64
 }
@@ -54,6 +69,20 @@ type Buffer struct {
 const (
 	hysteresis = 2 * time.Second
 	minMargin  = 250 * time.Millisecond
+)
+
+// paceHeadroom is how much faster than the measured arrival rate the reader may
+// emit. Pacing at exactly the arrival rate would turn any underestimate into a
+// growing queue, and this is a smoother, not a shaper.
+//
+// maxPaceLag bounds the whole mechanism: no packet is ever held longer than this
+// past the moment it was due, and a packet already later than this releases
+// immediately with the pacer's debt cleared. One frame at 30fps, so the pacer
+// can spread a frame but never becomes a second buffer, and a link recovering
+// from a stall is not smoothed into staying behind.
+const (
+	paceHeadroom = 1.25
+	maxPaceLag   = 33 * time.Millisecond
 )
 
 // resetCeiling is the depth at which a buffer stops being polite. The skip below
@@ -109,6 +138,8 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 		b.late++
 	}
 
+	b.bytesIn += uint64(pkt.MarshalSize()) //nolint:gosec // a packet size is never negative.
+
 	if b.catchUp && !isKeyframe(b.mime, pkt.Payload) {
 		b.dropped++
 
@@ -131,7 +162,9 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 	// reader has to wake. On a healthy link every packet lands at the back of
 	// the queue, so waking on each one had the reader recompute its wait and
 	// re-arm a timer several hundred times a second for no change at all.
-	if b.queue.push(buffered{pkt: pkt, playAt: playAt}) {
+	b.arrived++
+
+	if b.queue.push(buffered{pkt: pkt, playAt: playAt, order: b.arrived}) {
 		b.ready.Signal()
 	}
 }
@@ -174,9 +207,20 @@ func (b *Buffer) Pop() (*rtp.Packet, bool) {
 			continue
 		}
 
-		wait := time.Until(b.queue[0].playAt)
+		now := time.Now()
+
+		wait := b.queue[0].playAt.Sub(now)
 		if wait <= 0 {
-			return b.queue.pop().pkt, true
+			if hold := b.paceHoldLocked(now, b.queue[0].playAt); hold > 0 {
+				b.waitUntilLocked(hold)
+
+				continue
+			}
+
+			pkt := b.queue.pop().pkt
+			b.chargePaceLocked(now, pkt)
+
+			return pkt, true
 		}
 
 		b.waitUntilLocked(wait)
@@ -246,6 +290,8 @@ func (b *Buffer) depthLocked() time.Duration {
 func (b *Buffer) Correct() bool {
 	b.mu.Lock()
 
+	b.measurePaceLocked(time.Now())
+
 	depth := b.depthLocked()
 	started := false
 
@@ -277,6 +323,79 @@ func (b *Buffer) Correct() bool {
 	}
 
 	return started
+}
+
+// paceHoldLocked reports how long a due packet should wait so its frame leaves
+// spread rather than as one burst. Zero means send it now, which is the answer
+// whenever no rate has been measured, the packet is already late, or its slot
+// has arrived.
+func (b *Buffer) paceHoldLocked(now, playAt time.Time) time.Duration {
+	if b.paceRate <= 0 {
+		return 0
+	}
+
+	// Already later than a frame past its slot: the link is behind, and holding
+	// anything back here would only deepen that. Clearing the debt matters as
+	// much as returning zero, or the burst that follows a stall pays for a queue
+	// it never built.
+	if now.Sub(playAt) > maxPaceLag {
+		b.nextSlot = now
+
+		return 0
+	}
+
+	hold := b.nextSlot.Sub(now)
+	if hold <= 0 {
+		return 0
+	}
+
+	return min(hold, maxPaceLag)
+}
+
+// chargePaceLocked books the time this packet's own bytes occupy, which is what
+// puts the next one a slot later.
+func (b *Buffer) chargePaceLocked(now time.Time, pkt *rtp.Packet) {
+	if b.paceRate <= 0 {
+		return
+	}
+
+	if b.nextSlot.Before(now) {
+		b.nextSlot = now
+	}
+
+	seconds := float64(pkt.MarshalSize()) / b.paceRate
+	b.nextSlot = b.nextSlot.Add(time.Duration(seconds * float64(time.Second)))
+}
+
+// measurePaceLocked turns the bytes that arrived since the last pass into the
+// rate the reader emits at. It runs on Correct's tick, so the rate follows a
+// camera that changes bitrate without needing a path of its own.
+func (b *Buffer) measurePaceLocked(now time.Time) {
+	if b.paceAt.IsZero() {
+		b.paceAt, b.bytesIn = now, 0
+
+		return
+	}
+
+	elapsed := now.Sub(b.paceAt)
+	if elapsed < correctionInterval/4 {
+		return
+	}
+
+	rate := float64(b.bytesIn) / elapsed.Seconds() * paceHeadroom
+	b.paceAt, b.bytesIn = now, 0
+
+	if rate <= 0 {
+		return
+	}
+
+	// Weighted toward the rate already in use: a single quiet second between
+	// keyframes is not a camera that slowed down.
+	if b.paceRate <= 0 {
+		b.paceRate = rate
+	} else {
+		b.paceRate = 0.7*b.paceRate + 0.3*rate
+	}
 }
 
 func (b *Buffer) dropAllLocked() {
@@ -324,10 +443,27 @@ func (b *Buffer) Close() {
 	b.ready.Broadcast()
 }
 
-// buffered is one packet and the moment it is due.
+// buffered is one packet, the moment it is due, and where it sat in the arrival
+// order. The order is the tie-break: every packet of a frame carries one RTP
+// timestamp and therefore one playAt, so without it the heap returns them in
+// whatever order its own swaps left behind. That reordering is invisible in a
+// test that pushes one packet per frame and very visible on the wire, where a
+// receiver handed seq 1, 10, 9 asks for retransmissions of packets that were
+// never lost.
 type buffered struct {
 	pkt    *rtp.Packet
 	playAt time.Time
+	order  uint64
+}
+
+// before is the heap's ordering: due first, and among packets due together the
+// one that arrived first.
+func (b buffered) before(other buffered) bool {
+	if b.playAt.Equal(other.playAt) {
+		return b.order < other.order
+	}
+
+	return b.playAt.Before(other.playAt)
 }
 
 // packetHeap is a binary min-heap ordered by playout time, which also repairs
@@ -346,7 +482,7 @@ func (h *packetHeap) push(item buffered) bool {
 	child := len(*h) - 1
 	for child > 0 {
 		parent := (child - 1) / 2
-		if !(*h)[child].playAt.Before((*h)[parent].playAt) {
+		if !(*h)[child].before((*h)[parent]) {
 			break
 		}
 
@@ -378,11 +514,11 @@ func (h *packetHeap) sink(parent int) {
 	for {
 		left, smallest := 2*parent+1, parent
 
-		if left < size && (*h)[left].playAt.Before((*h)[smallest].playAt) {
+		if left < size && (*h)[left].before((*h)[smallest]) {
 			smallest = left
 		}
 
-		if right := left + 1; right < size && (*h)[right].playAt.Before((*h)[smallest].playAt) {
+		if right := left + 1; right < size && (*h)[right].before((*h)[smallest]) {
 			smallest = right
 		}
 

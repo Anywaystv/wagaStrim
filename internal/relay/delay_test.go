@@ -186,6 +186,111 @@ func TestASkipWaitingOnAKeyframeAsksAgainEverySecond(t *testing.T) {
 	}
 }
 
+func TestPacketsDueTogetherKeepTheirArrivalOrder(t *testing.T) {
+	buf := NewBuffer(10*time.Millisecond, testClock, "video/H264", nil)
+	defer buf.Close()
+
+	// One frame: ten packets, one timestamp, so all ten are due at the same
+	// instant and only the arrival order separates them. Ordering by playAt alone
+	// returned them shuffled, which reaches a receiver as gaps it asks to have
+	// filled.
+	for seq := uint16(1); seq <= 10; seq++ {
+		buf.Push(packet(seq, 0, idr()...))
+	}
+
+	for want := uint16(1); want <= 10; want++ {
+		got, ok := buf.Pop()
+		require.True(t, ok)
+		require.Equal(t, want, got.SequenceNumber, "a frame must leave in the order it arrived")
+	}
+}
+
+func TestAFrameLeavesSpreadRatherThanAsOneBurst(t *testing.T) {
+	buf := NewBuffer(20*time.Millisecond, testClock, "video/H264", nil)
+	defer buf.Close()
+
+	// Ten packets of one frame: one timestamp, so all ten are due at the same
+	// instant and an unpaced reader emits them back to back.
+	for seq := uint16(1); seq <= 10; seq++ {
+		buf.Push(packet(seq, 0, idr()...))
+	}
+
+	// A rate that puts each of these packets about 4ms apart. Measured normally
+	// on Correct's tick; set here so the test does not have to wait a second for
+	// one, and so the spacing it asserts is arithmetic rather than timing luck.
+	buf.mu.Lock()
+	buf.paceRate = float64(packet(1, 0, idr()...).MarshalSize()) / 0.004
+	buf.mu.Unlock()
+
+	start := time.Now()
+
+	for want := uint16(1); want <= 10; want++ {
+		got, ok := buf.Pop()
+		require.True(t, ok)
+		assert.Equal(t, want, got.SequenceNumber, "pacing must not reorder a frame")
+	}
+
+	spread := time.Since(start)
+	assert.Greater(t, spread, 15*time.Millisecond, "ten paced packets must not leave as one burst")
+	assert.Less(t, spread, 10*maxPaceLag, "and must not be held longer than a frame each")
+}
+
+func TestPacingReleasesAPacketThatIsAlreadyLate(t *testing.T) {
+	buf := NewBuffer(0, testClock, "video/H264", nil)
+	defer buf.Close()
+
+	buf.Push(packet(1, 0, idr()...))
+
+	// A rate low enough that one packet books minutes of pacing debt. Nothing may
+	// be held for it: the packet is past its slot, so the link is already behind.
+	buf.mu.Lock()
+	buf.paceRate = 1
+	buf.nextSlot = time.Now().Add(time.Hour)
+	buf.mu.Unlock()
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		_, ok := buf.Pop()
+		assert.True(t, ok)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		require.Fail(t, "a late packet must not wait on the pacer")
+	}
+}
+
+func TestTheMeasuredRateFollowsWhatArrives(t *testing.T) {
+	buf := NewBuffer(time.Second, testClock, "video/H264", nil)
+	defer buf.Close()
+
+	buf.mu.Lock()
+	buf.paceAt = time.Now().Add(-time.Second)
+	buf.mu.Unlock()
+
+	sent := 0
+	for seq := uint16(1); seq <= 50; seq++ {
+		pkt := packet(seq, uint32(seq)*testClock/30, interFrame()...)
+		sent += pkt.MarshalSize()
+		buf.Push(pkt)
+	}
+
+	buf.Correct()
+
+	buf.mu.Lock()
+	rate := buf.paceRate
+	buf.mu.Unlock()
+
+	// One second of arrivals, so the rate is those bytes plus the headroom that
+	// keeps an underestimate from building a queue.
+	assert.InDelta(t, float64(sent)*paceHeadroom, rate, float64(sent)*0.2,
+		"the pace must follow the bytes that arrived")
+}
+
 func TestCorrectIsQuietWhenHealthy(t *testing.T) {
 	buf := NewBuffer(2*time.Second, testClock, "video/H264", func() {
 		require.Fail(t, "a healthy buffer must not request keyframes")
