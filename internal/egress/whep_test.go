@@ -15,6 +15,7 @@ import (
 	"github.com/MarcFryd/wagaStrim/internal/stats"
 	"github.com/pion/logging"
 	"github.com/pion/rtcp"
+	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 	pionmedia "github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
@@ -157,17 +158,27 @@ func TestMediaReachesASubscriber(t *testing.T) {
 	require.NoError(t, whep.Teardown(resource))
 }
 
+// playoutDelayURI is the extension a receiver reads to decide how much media to
+// hold. A browser offers it; a stock pion peer does not, so the viewer below
+// registers it to negotiate the way the real receiver does.
+const playoutDelayURI = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay"
+
 // attachViewer subscribes a real receiver and returns it with the track it was
-// given, once media is actually arriving on that track.
+// given and the packets arriving on it, once media is actually flowing.
 func attachViewer(
 	t *testing.T,
 	whep *egress.Server,
 	ing *config.Ingest,
 	writeFrame func(),
-) (*webrtc.PeerConnection, *webrtc.TrackRemote) {
+) (*webrtc.PeerConnection, *webrtc.TrackRemote, <-chan *rtp.Packet) {
 	t.Helper()
 
-	viewer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	media := &webrtc.MediaEngine{}
+	require.NoError(t, media.RegisterDefaultCodecs())
+	require.NoError(t, media.RegisterHeaderExtension(
+		webrtc.RTPHeaderExtensionCapability{URI: playoutDelayURI}, webrtc.RTPCodecTypeVideo))
+
+	viewer, err := webrtc.NewAPI(webrtc.WithMediaEngine(media)).NewPeerConnection(webrtc.Configuration{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = viewer.Close() })
 
@@ -176,14 +187,22 @@ func attachViewer(
 	require.NoError(t, err)
 
 	carrying := make(chan *webrtc.TrackRemote, 1)
+	packets := make(chan *rtp.Packet, 1)
+
 	viewer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		for {
-			if _, _, readErr := track.ReadRTP(); readErr != nil {
+			pkt, _, readErr := track.ReadRTP()
+			if readErr != nil {
 				return
 			}
 
 			select {
 			case carrying <- track:
+			default:
+			}
+
+			select {
+			case packets <- pkt:
 			default:
 			}
 		}
@@ -200,19 +219,19 @@ func attachViewer(
 
 	select {
 	case track := <-carrying:
-		return viewer, track
+		return viewer, track, packets
 	case <-time.After(20 * time.Second):
 		require.Fail(t, "no RTP reached the subscriber")
 	}
 
-	return nil, nil
+	return nil, nil, nil
 }
 
 func TestSubscriberReceivesPackets(t *testing.T) {
 	whip, whep, ing := pipeline(t)
 	writeFrame, _, _ := publishWithFeedback(t, whip, ing)
 
-	_, track := attachViewer(t, whep, ing, writeFrame)
+	_, track, _ := attachViewer(t, whep, ing, writeFrame)
 
 	assert.Equal(t, webrtc.MimeTypeH264, track.Codec().MimeType)
 }
@@ -221,7 +240,7 @@ func TestSubscriberPLICrossesTheRelayToThePublisher(t *testing.T) {
 	whip, whep, ing := pipeline(t)
 	writeFrame, asked, _ := publishWithFeedback(t, whip, ing)
 
-	viewer, track := attachViewer(t, whep, ing, writeFrame)
+	viewer, track, _ := attachViewer(t, whep, ing, writeFrame)
 
 	// Attaching asks for a keyframe of its own. Waiting for the stream to go
 	// quiet is what makes the request below the only explanation for the next
@@ -240,6 +259,47 @@ func TestSubscriberPLICrossesTheRelayToThePublisher(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		require.Fail(t, "the request never reached the publisher")
 	}
+}
+
+// A receiver left to its own devices keeps the smallest buffer that keeps up,
+// and plays at the edge of the arrival jitter. What OBS then re-encodes for
+// Twitch is that stutter. The hold is asked for in the packets because the
+// player page's own request needs a JavaScript API not every Browser Source has.
+func TestPacketsAskTheReceiverToHold(t *testing.T) {
+	whip, whep, ing := pipeline(t)
+	writeFrame, _, _ := publishWithFeedback(t, whip, ing)
+
+	viewer, _, packets := attachViewer(t, whep, ing, writeFrame)
+
+	var negotiated uint8
+
+	for _, receiver := range viewer.GetReceivers() {
+		for _, extension := range receiver.GetParameters().HeaderExtensions {
+			// One-byte extension ids run 1 to 14, and the conversion below is
+			// only safe inside that range.
+			if extension.URI == playoutDelayURI && extension.ID > 0 && extension.ID < 15 {
+				negotiated = uint8(extension.ID)
+			}
+		}
+	}
+
+	require.NotZero(t, negotiated, "the answer never negotiated the extension")
+
+	require.Eventually(t, func() bool {
+		select {
+		case pkt := <-packets:
+			return len(pkt.GetExtension(negotiated)) > 0
+		case <-time.After(time.Second):
+			return false
+		}
+	}, 20*time.Second, 100*time.Millisecond, "no packet carried a playout delay")
+
+	pkt := <-packets
+
+	var hold rtp.PlayoutDelayExtension
+	require.NoError(t, hold.Unmarshal(pkt.GetExtension(negotiated)))
+
+	assert.Equal(t, uint16(30), hold.MinDelay, "300ms in the extension's units of 10ms")
 }
 
 // A publisher's Sender Reports only reach the report interceptor if the ingest
