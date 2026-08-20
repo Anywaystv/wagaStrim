@@ -14,6 +14,7 @@ import (
 	"github.com/MarcFryd/wagaStrim/internal/relay"
 	"github.com/MarcFryd/wagaStrim/internal/stats"
 	"github.com/pion/logging"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	pionmedia "github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
@@ -60,8 +61,14 @@ func gather(t *testing.T, peer *webrtc.PeerConnection) string {
 	return peer.LocalDescription().SDP
 }
 
-// startPublisher attaches a synthetic Moblin and returns a frame writer.
-func startPublisher(t *testing.T, whip *ingest.Server, ing *config.Ingest) func() {
+// publishWithFeedback attaches a synthetic Moblin and returns a frame writer
+// plus the RTCP coming back up its link, which is where a keyframe request and
+// a report of how the media is arriving both land.
+func publishWithFeedback(
+	t *testing.T,
+	whip *ingest.Server,
+	ing *config.Ingest,
+) (func(), <-chan struct{}, <-chan *rtcp.ReceiverReport) {
 	t.Helper()
 
 	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
@@ -72,8 +79,13 @@ func startPublisher(t *testing.T, whip *ingest.Server, ing *config.Ingest) func(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000}, "video", "synthetic")
 	require.NoError(t, err)
 
-	_, err = peer.AddTrack(track)
+	sender, err := peer.AddTrack(track)
 	require.NoError(t, err)
+
+	asked := make(chan struct{}, 16)
+	reports := make(chan *rtcp.ReceiverReport, 16)
+
+	go readFeedback(sender, asked, reports)
 
 	answer, _, err := whip.Publish(ing.SenderKey, gather(t, peer))
 	require.NoError(t, err)
@@ -84,6 +96,33 @@ func startPublisher(t *testing.T, whip *ingest.Server, ing *config.Ingest) func(
 
 	return func() {
 		_ = track.WriteSample(pionmedia.Sample{Data: frame, Duration: 33 * time.Millisecond})
+	}, asked, reports
+}
+
+// readFeedback splits the RTCP coming back up a publisher's link into the two
+// things a sender acts on: a request for a keyframe, and a report of how its
+// media is arriving.
+func readFeedback(sender *webrtc.RTPSender, asked chan<- struct{}, reports chan<- *rtcp.ReceiverReport) {
+	for {
+		packets, _, err := sender.ReadRTCP()
+		if err != nil {
+			return
+		}
+
+		for _, packet := range packets {
+			switch feedback := packet.(type) {
+			case *rtcp.PictureLossIndication:
+				select {
+				case asked <- struct{}{}:
+				default:
+				}
+			case *rtcp.ReceiverReport:
+				select {
+				case reports <- feedback:
+				default:
+				}
+			}
+		}
 	}
 }
 
@@ -109,7 +148,8 @@ func waitLive(t *testing.T, whep *egress.Server, ing *config.Ingest, writeFrame 
 
 func TestMediaReachesASubscriber(t *testing.T) {
 	whip, whep, ing := pipeline(t)
-	waitLive(t, whep, ing, startPublisher(t, whip, ing))
+	writeFrame, _, _ := publishWithFeedback(t, whip, ing)
+	waitLive(t, whep, ing, writeFrame)
 
 	_, resource, err := whep.Subscribe(ing.ReceiverKey, recvOffer(t))
 	require.NoError(t, err)
@@ -117,9 +157,15 @@ func TestMediaReachesASubscriber(t *testing.T) {
 	require.NoError(t, whep.Teardown(resource))
 }
 
-func TestSubscriberReceivesPackets(t *testing.T) {
-	whip, whep, ing := pipeline(t)
-	writeFrame := startPublisher(t, whip, ing)
+// attachViewer subscribes a real receiver and returns it with the track it was
+// given, once media is actually arriving on that track.
+func attachViewer(
+	t *testing.T,
+	whep *egress.Server,
+	ing *config.Ingest,
+	writeFrame func(),
+) (*webrtc.PeerConnection, *webrtc.TrackRemote) {
+	t.Helper()
 
 	viewer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	require.NoError(t, err)
@@ -129,10 +175,17 @@ func TestSubscriberReceivesPackets(t *testing.T) {
 		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
 	require.NoError(t, err)
 
-	got := make(chan struct{})
+	carrying := make(chan *webrtc.TrackRemote, 1)
 	viewer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-		if _, _, readErr := track.ReadRTP(); readErr == nil {
-			close(got)
+		for {
+			if _, _, readErr := track.ReadRTP(); readErr != nil {
+				return
+			}
+
+			select {
+			case carrying <- track:
+			default:
+			}
 		}
 	})
 
@@ -140,12 +193,90 @@ func TestSubscriberReceivesPackets(t *testing.T) {
 
 	answer, _, err := whep.Subscribe(ing.ReceiverKey, gather(t, viewer))
 	require.NoError(t, err)
-
 	require.NoError(t, viewer.SetRemoteDescription(
 		webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}))
 
+	keepWriting(t, writeFrame)
+
+	select {
+	case track := <-carrying:
+		return viewer, track
+	case <-time.After(20 * time.Second):
+		require.Fail(t, "no RTP reached the subscriber")
+	}
+
+	return nil, nil
+}
+
+func TestSubscriberReceivesPackets(t *testing.T) {
+	whip, whep, ing := pipeline(t)
+	writeFrame, _, _ := publishWithFeedback(t, whip, ing)
+
+	_, track := attachViewer(t, whep, ing, writeFrame)
+
+	assert.Equal(t, webrtc.MimeTypeH264, track.Codec().MimeType)
+}
+
+func TestSubscriberPLICrossesTheRelayToThePublisher(t *testing.T) {
+	whip, whep, ing := pipeline(t)
+	writeFrame, asked, _ := publishWithFeedback(t, whip, ing)
+
+	viewer, track := attachViewer(t, whep, ing, writeFrame)
+
+	// Attaching asks for a keyframe of its own. Waiting for the stream to go
+	// quiet is what makes the request below the only explanation for the next
+	// one, and it outlasts the throttle so ours is not the one dropped.
+	drain(asked)
+
+	require.Never(t, func() bool { return len(asked) > 0 }, 2*time.Second, 100*time.Millisecond,
+		"a healthy stream must not be asking for keyframes on its own")
+
+	require.NoError(t, viewer.WriteRTCP([]rtcp.Packet{
+		&rtcp.PictureLossIndication{MediaSSRC: uint32(track.SSRC())},
+	}))
+
+	select {
+	case <-asked:
+	case <-time.After(10 * time.Second):
+		require.Fail(t, "the request never reached the publisher")
+	}
+}
+
+// A publisher's Sender Reports only reach the report interceptor if the ingest
+// reads its RTCP, and unread, the phone has no round trip to adapt against.
+func TestReceiverReportsCarryTheRoundTrip(t *testing.T) {
+	whip, whep, ing := pipeline(t)
+	writeFrame, _, reports := publishWithFeedback(t, whip, ing)
+
+	waitLive(t, whep, ing, writeFrame)
+
+	keepWriting(t, writeFrame)
+
+	deadline := time.After(30 * time.Second)
+
+	for {
+		select {
+		case report := <-reports:
+			for _, block := range report.Reports {
+				if block.LastSenderReport != 0 {
+					assert.NotZero(t, block.Delay, "a report naming an SR must say how long ago it arrived")
+
+					return
+				}
+			}
+		case <-deadline:
+			require.Fail(t, "no receiver report named the publisher's last sender report")
+		}
+	}
+}
+
+// keepWriting drives the synthetic camera for the rest of a test, so the
+// stream under examination is a running one rather than a single frame.
+func keepWriting(t *testing.T, writeFrame func()) {
+	t.Helper()
+
 	stop := make(chan struct{})
-	defer close(stop)
+	t.Cleanup(func() { close(stop) })
 
 	go func() {
 		tick := time.NewTicker(33 * time.Millisecond)
@@ -160,11 +291,16 @@ func TestSubscriberReceivesPackets(t *testing.T) {
 			}
 		}
 	}()
+}
 
-	select {
-	case <-got:
-	case <-time.After(20 * time.Second):
-		require.Fail(t, "no RTP reached the subscriber")
+// drain empties a feedback channel of whatever a test is not interested in.
+func drain(feedback <-chan struct{}) {
+	for {
+		select {
+		case <-feedback:
+		default:
+			return
+		}
 	}
 }
 
@@ -186,7 +322,7 @@ func recvOffer(t *testing.T) string {
 // publisher reconnects.
 func TestPublisherEndingDisconnectsItsSubscribers(t *testing.T) {
 	whip, whep, ing := pipeline(t)
-	writeFrame := startPublisher(t, whip, ing)
+	writeFrame, _, _ := publishWithFeedback(t, whip, ing)
 
 	viewer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	require.NoError(t, err)
@@ -245,7 +381,8 @@ func TestSubscribingToAnIdleIngestSaysSo(t *testing.T) {
 
 func TestSendonlyOfferIsRefused(t *testing.T) {
 	whip, whep, ing := pipeline(t)
-	waitLive(t, whep, ing, startPublisher(t, whip, ing))
+	writeFrame, _, _ := publishWithFeedback(t, whip, ing)
+	waitLive(t, whep, ing, writeFrame)
 
 	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
 	require.NoError(t, err)

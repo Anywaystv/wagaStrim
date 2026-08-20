@@ -150,8 +150,10 @@ func buildAPI(engine *webrtc.SettingEngine, codecs []string) (*webrtc.API, error
 // registerCodecs registers everything the relay can carry. Which of them an
 // ingest actually offers is decided per camera when the answer is built.
 //
-// Payload types match pion's own defaults, so a client that hardcodes them
-// against a stock pion server still negotiates here.
+// H.265 and AV1 sit on pion's own default payload types; H.264 is on 96, which
+// pion gives to VP8 and which is what the phone apps tested here send. None of
+// it is load bearing, because an answer carries the payload types the offer
+// named, not these.
 func registerCodecs(media *webrtc.MediaEngine, codecs []string) error {
 	wanted := map[string]bool{}
 	for _, name := range codecs {
@@ -346,7 +348,12 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 		s.stats.Codec(ing.ID, config.CodecLabelOf(track.Codec().MimeType))
 	}
 
-	askKeyframe := func() { s.requestKeyframe(peer, track.SSRC()) }
+	// Video only. A PLI naming an audio SSRC asks for a picture from a stream
+	// that has none, and the buffer below calls this on every drift correction.
+	var askKeyframe func()
+	if track.Kind() == webrtc.RTPCodecTypeVideo {
+		askKeyframe = func() { s.requestKeyframe(ing, peer, track.SSRC()) }
+	}
 
 	out, err := s.relay.Publish(ing.ID, track.Kind(), track.Codec().RTPCodecCapability, askKeyframe)
 	if err != nil {
@@ -388,18 +395,34 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 	}
 }
 
-// requestKeyframe asks the publisher for an IDR so a subscriber that just joined
-// sees a picture now instead of at the next natural keyframe.
-func (s *Server) requestKeyframe(peer *webrtc.PeerConnection, ssrc webrtc.SSRC) {
+// requestKeyframe sends a PLI naming a publisher's video SSRC.
+func (s *Server) requestKeyframe(ing config.Ingest, peer *webrtc.PeerConnection, ssrc webrtc.SSRC) {
 	err := peer.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(ssrc)}})
 	if err != nil {
-		s.log.Warnf("keyframe request: %v", err)
+		s.log.Warnf("ingest %s: keyframe request: %v", ing.Label, err)
+	}
+}
+
+// drainRTCP consumes the publisher's RTCP. Nothing acts on it here, but pion
+// only moves RTCP when somebody reads it, and the report interceptor is what
+// reads through this call: unread, it never sees a Sender Report, so every
+// Receiver Report we send the phone carries a zero last-SR and zero delay, and
+// the phone cannot measure the round trip it is adapting its bitrate against.
+func drainRTCP(receiver *webrtc.RTPReceiver) {
+	buf := make([]byte, 1500)
+
+	for {
+		if _, _, err := receiver.Read(buf); err != nil {
+			return
+		}
 	}
 }
 
 // watch wires the callbacks that track a publisher's life.
 func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerConnection) {
-	peer.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+	peer.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		go drainRTCP(receiver)
+
 		s.drain(ing, session, peer, track)
 	})
 
