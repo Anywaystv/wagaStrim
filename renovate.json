@@ -4,9 +4,16 @@
   "packageRules": [
     {
       "description": "Pion moves together; one PR per week keeps the media stack consistent rather than drip fed.",
-      "matchPackagePatterns": ["^github.com/pion/"],
+      "matchPackageNames": ["github.com/pion/**"],
       "groupName": "pion",
       "schedule": ["before 6am on monday"]
+    },
+    {
+      "description": "Half the pion stack is an indirect dependency, and Renovate leaves those alone in gomod unless told otherwise.",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["indirect"],
+      "matchPackageNames": ["github.com/pion/**"],
+      "enabled": true
     }
   ]
 }
