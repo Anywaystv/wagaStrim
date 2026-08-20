@@ -22,7 +22,6 @@ import (
 	"github.com/pion/interceptor/pkg/nack"
 	"github.com/pion/logging"
 	"github.com/pion/rtcp"
-	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -335,21 +334,6 @@ func (s *Server) clearPrevious(ing config.Ingest) error {
 	return nil
 }
 
-// stripExtensions drops the publisher's RTP header extensions before a packet is
-// forwarded. Their ids come from the extmap of the session that sent them, and
-// the session this is forwarded into negotiated its own -- so an id that meant
-// abs-send-time on the way in can mean transport-cc, toffset or
-// video-orientation on the way out. Those are the fields a receiver times
-// playout from, which is what makes a wrong one look like a picture that
-// stutters and jumps rather than an error anybody reports. pion says the same of
-// pass-through in its v4 notes: clear or rewrite them. Cleared here, so the only
-// extensions leaving are the ones this side's own interceptors negotiated.
-func stripExtensions(pkt *rtp.Packet) {
-	pkt.Extension = false
-	pkt.ExtensionProfile = 0
-	pkt.Extensions = nil
-}
-
 // drain forwards the track into the relay and counts bytes. Packets are passed
 // through untouched: no depacketising, no re-encoding, no timestamp rewriting.
 func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerConnection, track *webrtc.TrackRemote) {
@@ -393,8 +377,6 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 
 			return
 		}
-
-		stripExtensions(pkt)
 
 		total := session.add(pkt.MarshalSize())
 		buf.Push(pkt)

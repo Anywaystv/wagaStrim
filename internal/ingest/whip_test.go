@@ -11,7 +11,6 @@ import (
 	"github.com/MarcFryd/wagaStrim/internal/relay"
 	"github.com/MarcFryd/wagaStrim/internal/stats"
 	"github.com/pion/logging"
-	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 	pionmedia "github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
@@ -257,25 +256,4 @@ func testIngest(label string) config.Ingest {
 		Codecs:      []string{config.CodecH264},
 		DelayMS:     config.DelayDefaultMS,
 	}
-}
-
-func TestForwardedPacketsCarryNoPublisherExtensions(t *testing.T) {
-	// Header extension ids are negotiated per session, so an id forwarded from
-	// the publisher names a different extension on the subscriber's side. What is
-	// asserted here is the clearing itself, since the hop it protects needs two
-	// peer connections to observe.
-	pkt := &rtp.Packet{
-		Header:  rtp.Header{Version: 2, ExtensionProfile: 0xBEDE},
-		Payload: []byte{0x01, 0x02},
-	}
-
-	require.NoError(t, pkt.SetExtension(1, []byte{0xAA, 0xBB, 0xCC}))
-	require.True(t, pkt.Extension)
-	require.NotEmpty(t, pkt.Extensions)
-
-	stripExtensions(pkt)
-
-	assert.False(t, pkt.Extension, "a forwarded packet must not claim an extension")
-	assert.Empty(t, pkt.Extensions, "and must carry none")
-	assert.Equal(t, []byte{0x01, 0x02}, pkt.Payload, "clearing must not touch the media")
 }
