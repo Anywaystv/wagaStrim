@@ -28,6 +28,13 @@
   let resource = null;
   let retry = 1000;
 
+  // What the receiver is asked to hold before playing, in milliseconds. Enough
+  // to cover the clump a frame arrives in plus a phone uplink's jitter, and
+  // small enough not to put the picture visibly behind the room. It sits under
+  // the playout target the daemon already applies rather than replacing it:
+  // that one absorbs the network, this one keeps the decoder's cadence steady.
+  const jitterTargetMS = 300;
+
   // sendBeacon can only POST and the teardown route is a DELETE, so nothing a
   // Browser Source did ever released its session; it sat on the server until
   // ICE timed out. keepalive is what lets the request outlive the page.
@@ -93,6 +100,19 @@
 
     resource = res.headers.get("location");
     await peer.setRemoteDescription({ type: "answer", sdp: await res.text() });
+
+    // Ask the receiver to hold a little media before playing it. WebRTC keeps
+    // the smallest buffer that keeps up, which suits a conversation and not
+    // this: nobody is talking back, and a camera on a phone uplink delivers a
+    // frame's packets in a clump. Without it the decoder sits at the edge of
+    // that jitter and stutters on every late packet. jitterBufferTarget is the
+    // standard name, playoutDelayHint is what older builds understand, and a
+    // build with neither ignores both.
+    for (const receiver of peer.getReceivers()) {
+      if (receiver.track && receiver.track.kind !== "video") continue;
+      if ("jitterBufferTarget" in receiver) receiver.jitterBufferTarget = jitterTargetMS;
+      else if ("playoutDelayHint" in receiver) receiver.playoutDelayHint = jitterTargetMS / 1000;
+    }
 
     // OBS sets autoplay-policy=no-user-gesture-required, so unmuted playback
     // starts on its own there. An ordinary browser will refuse; say so rather
