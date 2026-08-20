@@ -209,30 +209,37 @@ func TestAFrameLeavesSpreadRatherThanAsOneBurst(t *testing.T) {
 	buf := NewBuffer(20*time.Millisecond, testClock, "video/H264", nil)
 	defer buf.Close()
 
-	// Ten packets of one frame: one timestamp, so all ten are due at the same
-	// instant and an unpaced reader emits them back to back.
-	for seq := uint16(1); seq <= 10; seq++ {
-		buf.Push(packet(seq, 0, idr()...))
+	// Two frames a 33ms apart in sender time, the second one ten packets wide.
+	// The first frame teaches the buffer the cadence; the second is the one that
+	// has to leave spread across it rather than all at once.
+	buf.Push(packet(1, 0, idr()...))
+
+	for seq := uint16(2); seq <= 11; seq++ {
+		buf.Push(packet(seq, testClock/30, interFrame()...))
 	}
 
-	// A rate that puts each of these packets about 4ms apart. Measured normally
-	// on Correct's tick; set here so the test does not have to wait a second for
-	// one, and so the spacing it asserts is arithmetic rather than timing luck.
-	buf.mu.Lock()
-	buf.paceRate = float64(packet(1, 0, idr()...).MarshalSize()) / 0.004
-	buf.mu.Unlock()
+	first, ok := buf.Pop()
+	require.True(t, ok)
+	require.Equal(t, uint16(1), first.SequenceNumber)
+
+	// The second frame is not due until its own playout time, so the clock starts
+	// at its first packet: what is measured here is the spread of one group, not
+	// the wait for the frame to arrive.
+	second, ok := buf.Pop()
+	require.True(t, ok)
+	require.Equal(t, uint16(2), second.SequenceNumber)
 
 	start := time.Now()
 
-	for want := uint16(1); want <= 10; want++ {
+	for want := uint16(3); want <= 11; want++ {
 		got, ok := buf.Pop()
 		require.True(t, ok)
-		assert.Equal(t, want, got.SequenceNumber, "pacing must not reorder a frame")
+		require.Equal(t, want, got.SequenceNumber, "pacing must not reorder a frame")
 	}
 
 	spread := time.Since(start)
-	assert.Greater(t, spread, 15*time.Millisecond, "ten paced packets must not leave as one burst")
-	assert.Less(t, spread, 10*maxPaceLag, "and must not be held longer than a frame each")
+	assert.Greater(t, spread, 5*time.Millisecond, "a frame's packets must not leave as one burst")
+	assert.Less(t, spread, 33*time.Millisecond, "and must all leave before the next frame is due")
 }
 
 func TestPacingReleasesAPacketThatIsAlreadyLate(t *testing.T) {
@@ -241,10 +248,11 @@ func TestPacingReleasesAPacketThatIsAlreadyLate(t *testing.T) {
 
 	buf.Push(packet(1, 0, idr()...))
 
-	// A rate low enough that one packet books minutes of pacing debt. Nothing may
-	// be held for it: the packet is past its slot, so the link is already behind.
+	// A group spacing wide enough to hold this packet for minutes. Nothing may
+	// wait on it: the packet is past its slot, so the link is already behind.
 	buf.mu.Lock()
-	buf.paceRate = 1
+	buf.group = buf.queue[0].playAt
+	buf.groupGap = time.Hour
 	buf.nextSlot = time.Now().Add(time.Hour)
 	buf.mu.Unlock()
 
@@ -264,31 +272,26 @@ func TestPacingReleasesAPacketThatIsAlreadyLate(t *testing.T) {
 	}
 }
 
-func TestTheMeasuredRateFollowsWhatArrives(t *testing.T) {
-	buf := NewBuffer(time.Second, testClock, "video/H264", nil)
+func TestTheCadenceComesFromThePlayoutTimes(t *testing.T) {
+	buf := NewBuffer(50*time.Millisecond, testClock, "video/H264", nil)
 	defer buf.Close()
 
-	buf.mu.Lock()
-	buf.paceAt = time.Now().Add(-time.Second)
-	buf.mu.Unlock()
-
-	sent := 0
-	for seq := uint16(1); seq <= 50; seq++ {
-		pkt := packet(seq, uint32(seq)*testClock/30, interFrame()...)
-		sent += pkt.MarshalSize()
-		buf.Push(pkt)
+	// Three frames, a thirtieth of a second apart by their timestamps.
+	for frame := range 3 {
+		buf.Push(packet(uint16(frame+1), uint32(frame)*testClock/30, idr()...)) //nolint:gosec // three.
 	}
 
-	buf.Correct()
+	for range 3 {
+		_, ok := buf.Pop()
+		require.True(t, ok)
+	}
 
 	buf.mu.Lock()
-	rate := buf.paceRate
+	gap := buf.frameGap
 	buf.mu.Unlock()
 
-	// One second of arrivals, so the rate is those bytes plus the headroom that
-	// keeps an underestimate from building a queue.
-	assert.InDelta(t, float64(sent)*paceHeadroom, rate, float64(sent)*0.2,
-		"the pace must follow the bytes that arrived")
+	assert.InDelta(t, float64(testClock/30)/float64(testClock)*float64(time.Second), float64(gap),
+		float64(3*time.Millisecond), "the frame interval must be read from the playout times")
 }
 
 func TestCorrectIsQuietWhenHealthy(t *testing.T) {

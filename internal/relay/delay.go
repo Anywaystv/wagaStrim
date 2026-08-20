@@ -39,19 +39,25 @@ type Buffer struct {
 	catchUp  bool
 	keyframe func()
 
+	// arrived counts pushes, which is what orders packets that are due together.
+	arrived uint64
+
 	// Pacing. Every packet of a frame carries one timestamp, so without this the
 	// whole frame becomes due at the same instant and leaves as one burst -- a
 	// measured 96 packets back to back, then nothing for 33ms. A receiver on a
 	// shared radio queues that clump, drains it late, and plays the result frame
-	// by frame. paceRate is bytes a second, learned from what arrives rather than
-	// configured, and zero until a rate has been measured: a buffer that has not
-	// seen a second of media yet paces nothing.
-	// arrived counts pushes, which is what orders packets that are due together.
-	arrived uint64
-
-	bytesIn  uint64
-	paceAt   time.Time
-	paceRate float64
+	// by frame.
+	//
+	// The spread is a frame's own, not a bitrate's. Pacing against a measured
+	// byte rate smoothed the packets and cost the thing that mattered more: a
+	// keyframe is several times the size of the frames around it, so at an
+	// average rate it took more than a frame interval to leave and pushed
+	// everything behind it out of step -- frame gaps with a 63ms p95 against a
+	// 33ms target. Spacing a group across the interval to the next frame keeps
+	// the cadence the timestamps already describe.
+	group    time.Time     // the playAt of the group being drained
+	groupGap time.Duration // spacing between that group's packets
+	frameGap time.Duration // interval between frames, learned from their playout times
 	nextSlot time.Time
 
 	late    uint64
@@ -71,19 +77,12 @@ const (
 	minMargin  = 250 * time.Millisecond
 )
 
-// paceHeadroom is how much faster than the measured arrival rate the reader may
-// emit. Pacing at exactly the arrival rate would turn any underestimate into a
-// growing queue, and this is a smoother, not a shaper.
-//
 // maxPaceLag bounds the whole mechanism: no packet is ever held longer than this
 // past the moment it was due, and a packet already later than this releases
 // immediately with the pacer's debt cleared. One frame at 30fps, so the pacer
 // can spread a frame but never becomes a second buffer, and a link recovering
 // from a stall is not smoothed into staying behind.
-const (
-	paceHeadroom = 1.25
-	maxPaceLag   = 33 * time.Millisecond
-)
+const maxPaceLag = 33 * time.Millisecond
 
 // resetCeiling is the depth at which a buffer stops being polite. The skip below
 // is the graceful correction and it depends on the publisher answering a
@@ -137,8 +136,6 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 	if playAt.Before(time.Now()) {
 		b.late++
 	}
-
-	b.bytesIn += uint64(pkt.MarshalSize()) //nolint:gosec // a packet size is never negative.
 
 	if b.catchUp && !isKeyframe(b.mime, pkt.Payload) {
 		b.dropped++
@@ -211,14 +208,14 @@ func (b *Buffer) Pop() (*rtp.Packet, bool) {
 
 		wait := b.queue[0].playAt.Sub(now)
 		if wait <= 0 {
-			if hold := b.paceHoldLocked(now, b.queue[0].playAt); hold > 0 {
+			if hold := b.paceHoldLocked(now); hold > 0 {
 				b.waitUntilLocked(hold)
 
 				continue
 			}
 
 			pkt := b.queue.pop().pkt
-			b.chargePaceLocked(now, pkt)
+			b.chargePaceLocked(now)
 
 			return pkt, true
 		}
@@ -290,8 +287,6 @@ func (b *Buffer) depthLocked() time.Duration {
 func (b *Buffer) Correct() bool {
 	b.mu.Lock()
 
-	b.measurePaceLocked(time.Now())
-
 	depth := b.depthLocked()
 	started := false
 
@@ -325,77 +320,98 @@ func (b *Buffer) Correct() bool {
 	return started
 }
 
-// paceHoldLocked reports how long a due packet should wait so its frame leaves
-// spread rather than as one burst. Zero means send it now, which is the answer
-// whenever no rate has been measured, the packet is already late, or its slot
-// has arrived.
-func (b *Buffer) paceHoldLocked(now, playAt time.Time) time.Duration {
-	if b.paceRate <= 0 {
-		return 0
+// paceHoldLocked reports how long the packet at the head should wait so its
+// frame leaves spread across the interval before the next one, rather than as a
+// single burst. Zero means send it now.
+//
+// A group is every packet sharing one playout time, which for video is one
+// frame. The first packet of a group measures the group: how many packets it
+// holds, and how long there is until the next frame is due. The rest follow at
+// that spacing without another scan.
+func (b *Buffer) paceHoldLocked(now time.Time) time.Duration {
+	head := b.queue[0]
+
+	if !head.playAt.Equal(b.group) {
+		b.startGroupLocked(now, head.playAt)
 	}
 
-	// Already later than a frame past its slot: the link is behind, and holding
-	// anything back here would only deepen that. Clearing the debt matters as
-	// much as returning zero, or the burst that follows a stall pays for a queue
-	// it never built.
-	if now.Sub(playAt) > maxPaceLag {
+	// Already a frame late: the link is behind and holding anything back only
+	// deepens it. Clearing the slot matters as much as returning zero, or the
+	// burst that follows a stall pays for a queue it never built.
+	if now.Sub(head.playAt) > b.lateAllowanceLocked() {
 		b.nextSlot = now
 
 		return 0
 	}
 
-	hold := b.nextSlot.Sub(now)
-	if hold <= 0 {
-		return 0
+	if hold := b.nextSlot.Sub(now); hold > 0 {
+		return min(hold, b.lateAllowanceLocked())
 	}
 
-	return min(hold, maxPaceLag)
+	return 0
 }
 
-// chargePaceLocked books the time this packet's own bytes occupy, which is what
-// puts the next one a slot later.
-func (b *Buffer) chargePaceLocked(now time.Time, pkt *rtp.Packet) {
-	if b.paceRate <= 0 {
+// startGroupLocked measures the frame now at the head: the gap to the previous
+// frame is the cadence to hold, and the packets sharing this playout time are
+// what has to fit inside it.
+func (b *Buffer) startGroupLocked(now time.Time, playAt time.Time) {
+	if !b.group.IsZero() {
+		if gap := playAt.Sub(b.group); gap > 0 && gap < time.Second {
+			if b.frameGap == 0 {
+				b.frameGap = gap
+			} else {
+				b.frameGap = (3*b.frameGap + gap) / 4
+			}
+		}
+	}
+
+	packets := 0
+
+	for _, item := range b.queue {
+		if item.playAt.Equal(playAt) {
+			packets++
+		}
+	}
+
+	b.group = playAt
+	b.nextSlot = now
+	b.groupGap = 0
+
+	// Four fifths of the interval, so a group always finishes before the next
+	// frame is due however badly the count or the cadence is estimated. One
+	// packet needs no spacing at all.
+	if packets > 1 && b.frameGap > 0 {
+		b.groupGap = b.frameGap * 4 / 5 / time.Duration(packets)
+	}
+}
+
+// lateAllowanceLocked is how far past its playout time a packet may be held or
+// arrive before pacing gives up on it. One frame, once a cadence is known.
+func (b *Buffer) lateAllowanceLocked() time.Duration {
+	if b.frameGap <= 0 {
+		return maxPaceLag
+	}
+
+	return min(b.frameGap, maxPaceLag)
+}
+
+// chargePaceLocked books this packet's own slot, which is what puts the next
+// one of the same frame a spacing later.
+func (b *Buffer) chargePaceLocked(now time.Time) {
+	if b.groupGap <= 0 {
 		return
 	}
 
-	if b.nextSlot.Before(now) {
+	// Anchored to the slot rather than to now. A timer that fires a millisecond
+	// late must not move every packet behind it, or the slop compounds down the
+	// group and the frame finishes after the next one was due -- measured as a
+	// 38ms spread against a 33ms interval. Only a slot that has fallen further
+	// behind than a whole frame is abandoned and restarted from now.
+	if b.nextSlot.Before(now.Add(-b.lateAllowanceLocked())) {
 		b.nextSlot = now
 	}
 
-	seconds := float64(pkt.MarshalSize()) / b.paceRate
-	b.nextSlot = b.nextSlot.Add(time.Duration(seconds * float64(time.Second)))
-}
-
-// measurePaceLocked turns the bytes that arrived since the last pass into the
-// rate the reader emits at. It runs on Correct's tick, so the rate follows a
-// camera that changes bitrate without needing a path of its own.
-func (b *Buffer) measurePaceLocked(now time.Time) {
-	if b.paceAt.IsZero() {
-		b.paceAt, b.bytesIn = now, 0
-
-		return
-	}
-
-	elapsed := now.Sub(b.paceAt)
-	if elapsed < correctionInterval/4 {
-		return
-	}
-
-	rate := float64(b.bytesIn) / elapsed.Seconds() * paceHeadroom
-	b.paceAt, b.bytesIn = now, 0
-
-	if rate <= 0 {
-		return
-	}
-
-	// Weighted toward the rate already in use: a single quiet second between
-	// keyframes is not a camera that slowed down.
-	if b.paceRate <= 0 {
-		b.paceRate = rate
-	} else {
-		b.paceRate = 0.7*b.paceRate + 0.3*rate
-	}
+	b.nextSlot = b.nextSlot.Add(b.groupGap)
 }
 
 func (b *Buffer) dropAllLocked() {
