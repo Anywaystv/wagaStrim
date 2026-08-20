@@ -106,9 +106,22 @@ func buildAPI(engine *webrtc.SettingEngine, codecs []string) (*webrtc.API, error
 		return nil, err
 	}
 
+	// Reports and TWCC, but deliberately not RegisterDefaultInterceptors: that
+	// helper also calls ConfigureNack, and the pair added below would then be the
+	// second generator and the second responder in the chain rather than the
+	// only ones. Two responders answer the same NACK, so every packet a receiver
+	// asked for was sent to it twice -- measured on a live camera as 2.6 sends
+	// per packet, 16 Mbps of egress for a 6 Mbps stream, video only, because
+	// NACK is not negotiated for audio. Configuring the two halves by hand is
+	// what keeps nackHistory below meaningful: the helper's own pair is fixed at
+	// pion's default depth.
 	registry := &interceptor.Registry{}
-	if err := webrtc.RegisterDefaultInterceptors(media, registry); err != nil {
-		return nil, fmt.Errorf("%w: default interceptors: %w", ErrBuildAPI, err)
+	if err := webrtc.ConfigureRTCPReports(registry); err != nil {
+		return nil, fmt.Errorf("%w: rtcp reports: %w", ErrBuildAPI, err)
+	}
+
+	if err := webrtc.ConfigureTWCCSender(media, registry); err != nil {
+		return nil, fmt.Errorf("%w: twcc: %w", ErrBuildAPI, err)
 	}
 
 	generator, err := nack.NewGeneratorInterceptor(nack.GeneratorSize(nackHistory))
