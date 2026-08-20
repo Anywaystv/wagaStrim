@@ -125,6 +125,67 @@ func TestDriftCorrectionSkipsToAKeyframe(t *testing.T) {
 	assert.Equal(t, uint16(21), got.SequenceNumber, "playback must resume on a keyframe")
 }
 
+func TestADepthPastTenSecondsIsEmptiedRatherThanHeld(t *testing.T) {
+	asks := make(chan struct{}, 4)
+	buf := NewBuffer(50*time.Millisecond, testClock, "video/H264", func() {
+		select {
+		case asks <- struct{}{}:
+		default:
+		}
+	})
+	defer buf.Close()
+
+	buf.Push(packet(1, 0, idr()...))
+
+	// Twelve seconds of timestamps against a 50ms target. A publisher that never
+	// answers the first keyframe request leaves the buffer here indefinitely,
+	// which is the case this ceiling exists for.
+	for seq := uint16(2); seq < 14; seq++ {
+		buf.Push(packet(seq, uint32(seq)*12*testClock/12, interFrame()...))
+	}
+
+	buf.Push(packet(14, 12*testClock, interFrame()...))
+	require.Greater(t, buf.depth(), resetCeiling, "the queue must be past the ceiling for this test to mean anything")
+
+	require.True(t, buf.Correct(), "a queue past the ceiling must correct")
+	assert.Zero(t, buf.depth(), "the queue must be emptied rather than held for a keyframe")
+
+	select {
+	case <-asks:
+	case <-time.After(time.Second):
+		require.Fail(t, "the reset must ask the publisher for a keyframe")
+	}
+}
+
+func TestASkipWaitingOnAKeyframeAsksAgainEverySecond(t *testing.T) {
+	asks := make(chan struct{}, 4)
+	buf := NewBuffer(50*time.Millisecond, testClock, "video/H264", func() {
+		select {
+		case asks <- struct{}{}:
+		default:
+		}
+	})
+	defer buf.Close()
+
+	buf.Push(packet(1, 0, idr()...))
+	buf.Push(packet(2, 12*testClock, interFrame()...))
+	require.True(t, buf.Correct(), "the first pass is the reset")
+	<-asks
+
+	// The skip is now in flight and its queue reads empty, because inter frames
+	// are dropped while catching up. A publisher that ignored the first request
+	// leaves the picture frozen here, so every later pass has to ask again.
+	buf.Push(packet(3, 24*testClock, interFrame()...))
+	require.Zero(t, buf.depth(), "inter frames are dropped while catching up")
+	assert.False(t, buf.Correct(), "asking again is not a new correction")
+
+	select {
+	case <-asks:
+	case <-time.After(time.Second):
+		require.Fail(t, "a stalled catch-up must ask again")
+	}
+}
+
 func TestCorrectIsQuietWhenHealthy(t *testing.T) {
 	buf := NewBuffer(2*time.Second, testClock, "video/H264", func() {
 		require.Fail(t, "a healthy buffer must not request keyframes")
