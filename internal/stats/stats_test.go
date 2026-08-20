@@ -145,3 +145,40 @@ func TestSwitchCountSurvivesAReconnect(t *testing.T) {
 
 	assert.Equal(t, 1, reg.Of("cam").Switches)
 }
+
+// The codec is negotiated once per session but read on every poll, so it has to
+// outlive the connection that discovered it.
+func TestCodecSurvivesAReconnect(t *testing.T) {
+	reg := New()
+	reg.Publishing("cam")
+	reg.Codec("cam", "H.264")
+	reg.Stopped("cam")
+	reg.Publishing("cam")
+
+	assert.Equal(t, "H.264", reg.Of("cam").Codec, "the last known codec is still the answer")
+}
+
+// A camera that skipped keyframes once at a lower target keeps arriving late
+// while it settles. Reading the lifetime drop count kept "skipping to keyframes"
+// on screen for a buffer that had not skipped in minutes.
+func TestSkippingAdviceFollowsRecentDropsNotTheLifetimeTotal(t *testing.T) {
+	reg := New()
+	reg.Publishing("cam")
+	reg.Observe("cam", 1000, 10, 5)
+
+	assert.Contains(t, reg.Of("cam").Advice, "Skipping to keyframes")
+
+	reg.mu.Lock()
+	entry := reg.counters["cam"]
+	entry.lastSkipped = time.Now().Add(-2 * adviceWindow)
+	// The sample has to age too. A second Observe inside the sampling interval
+	// returns at the rate limit without ever reaching the branch under test.
+	entry.samples[len(entry.samples)-1].at = time.Now().Add(-2 * sampleEvery)
+	reg.mu.Unlock()
+
+	// The same skip count as before: nothing new was dropped, only arrived late.
+	reg.Observe("cam", 2000, 20, 5)
+
+	assert.Equal(t, "Packets are arriving after their slot. Raise the delay for this camera.",
+		reg.Of("cam").Advice, "late packets alone must not report a skip that stopped")
+}

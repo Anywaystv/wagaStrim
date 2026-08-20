@@ -4,6 +4,7 @@
 package egress_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -32,11 +33,15 @@ func pipeline(t *testing.T) (*ingest.Server, *egress.Server, *config.Ingest) {
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
 	hub := relay.New()
 
-	whip, err := ingest.NewServer(cfg, log, engine, hub, stats.New())
+	// Wired as main wires it.
+	var whep *egress.Server
+
+	whip, err := ingest.NewServer(cfg, log, engine, hub, stats.New(),
+		func(id string) { whep.CloseIngest(id) })
 	require.NoError(t, err)
 	t.Cleanup(whip.Close)
 
-	whep := egress.NewServer(cfg, log, whip.API(), hub)
+	whep = egress.NewServer(cfg, log, whip.API(), hub)
 	t.Cleanup(whep.Close)
 
 	return whip, whep, &cfg.Ingests[0]
@@ -175,6 +180,53 @@ func recvOffer(t *testing.T) string {
 	require.NoError(t, err)
 
 	return gather(t, peer)
+}
+
+// Without this a subscriber sits connected and frozen for good once its
+// publisher reconnects.
+func TestPublisherEndingDisconnectsItsSubscribers(t *testing.T) {
+	whip, whep, ing := pipeline(t)
+	writeFrame := startPublisher(t, whip, ing)
+
+	viewer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = viewer.Close() })
+
+	_, err = viewer.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo,
+		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly})
+	require.NoError(t, err)
+
+	gone := make(chan struct{})
+	closeOnce := sync.OnceFunc(func() { close(gone) })
+
+	viewer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		switch state {
+		case webrtc.PeerConnectionStateDisconnected,
+			webrtc.PeerConnectionStateFailed,
+			webrtc.PeerConnectionStateClosed:
+			closeOnce()
+		default:
+		}
+	})
+
+	waitLive(t, whep, ing, writeFrame)
+
+	answer, _, err := whep.Subscribe(ing.ReceiverKey, gather(t, viewer))
+	require.NoError(t, err)
+	require.NoError(t, viewer.SetRemoteDescription(
+		webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}))
+
+	require.Eventually(t, func() bool {
+		return viewer.ConnectionState() == webrtc.PeerConnectionStateConnected
+	}, 20*time.Second, 100*time.Millisecond, "the subscriber never connected")
+
+	whip.CloseIngest(ing.ID)
+
+	select {
+	case <-gone:
+	case <-time.After(30 * time.Second):
+		require.Fail(t, "the subscriber was left on a track nothing will ever write to again")
+	}
 }
 
 func TestSenderKeyAtWhepIsRefused(t *testing.T) {

@@ -22,6 +22,7 @@ type Buffer struct {
 	mu     sync.Mutex
 	ready  *sync.Cond
 	queue  packetHeap
+	timer  *time.Timer
 	closed bool
 
 	target    time.Duration
@@ -116,8 +117,13 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 		playAt = b.playoutOf(pkt.Timestamp)
 	}
 
-	b.queue.push(buffered{pkt: pkt, playAt: playAt})
-	b.ready.Signal()
+	// Only a packet that is now due before everything else changes when the
+	// reader has to wake. On a healthy link every packet lands at the back of
+	// the queue, so waking on each one had the reader recompute its wait and
+	// re-arm a timer several hundred times a second for no change at all.
+	if b.queue.push(buffered{pkt: pkt, playAt: playAt}) {
+		b.ready.Signal()
+	}
 }
 
 // playoutOf maps a sender timestamp onto our clock.
@@ -169,15 +175,29 @@ func (b *Buffer) Pop() (*rtp.Packet, bool) {
 
 // waitUntilLocked sleeps without holding the lock, waking early if a packet that
 // is due sooner arrives or the buffer closes.
+//
+// One timer is kept and re-armed rather than a new one per wait. There is a
+// single reader per buffer, so there is never more than one wait outstanding,
+// and a fresh timer here was an allocation on the path every packet takes. A
+// timer that fires while it is being re-armed only signals early, which the
+// loop in Pop already tolerates.
 func (b *Buffer) waitUntilLocked(wait time.Duration) {
-	timer := time.AfterFunc(wait, func() {
-		b.mu.Lock()
-		defer b.mu.Unlock()
-		b.ready.Signal()
-	})
-	defer timer.Stop()
+	if b.timer == nil {
+		b.timer = time.AfterFunc(wait, b.wake)
+	} else {
+		b.timer.Reset(wait)
+	}
+
+	defer b.timer.Stop()
 
 	b.ready.Wait()
+}
+
+func (b *Buffer) wake() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.ready.Signal()
 }
 
 // depth is how far ahead of now the newest queued packet is scheduled. It sits
@@ -243,11 +263,23 @@ func (b *Buffer) Stats() (late, dropped uint64) {
 
 // SetTarget changes the playout target of a running buffer. Clamping is the
 // caller's job; config does it on every path that can set one.
+//
+// Packets already queued move with it. They were scheduled against the old
+// target, so leaving them where they are would put every packet arriving after
+// a lowered delay ahead of every packet queued before it, and the relay would
+// write a second of media out in reverse. The shift is the same for all of
+// them, so the heap order is unchanged.
 func (b *Buffer) SetTarget(target time.Duration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	shift := target - b.target
 	b.target = target
+
+	for idx := range b.queue {
+		b.queue[idx].playAt = b.queue[idx].playAt.Add(shift)
+	}
+
 	b.ready.Signal()
 }
 
@@ -274,7 +306,9 @@ type buffered struct {
 // per packet on a path that carries several hundred a second per camera.
 type packetHeap []buffered
 
-func (h *packetHeap) push(item buffered) {
+// push adds an item and reports whether it came to rest at the root, which is
+// what tells the reader its next deadline moved.
+func (h *packetHeap) push(item buffered) bool {
 	*h = append(*h, item)
 
 	child := len(*h) - 1
@@ -287,6 +321,8 @@ func (h *packetHeap) push(item buffered) {
 		(*h)[child], (*h)[parent] = (*h)[parent], (*h)[child]
 		child = parent
 	}
+
+	return child == 0
 }
 
 func (h *packetHeap) pop() buffered {

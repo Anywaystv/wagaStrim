@@ -12,24 +12,20 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 )
 
 // Delay bounds in milliseconds. The floor is not a default, it is a floor: two
 // seconds of buffered media is what keeps OBS fed through a tunnel or a tower
 // handoff. A value below it is clamped rather than honored, and the file is
-// never trusted to stay inside the range.
-//
-// DelayHardFloorMS is the lowest a deployment may move that floor to. A phone on
-// a tower handoff needs the full two seconds and a person installing this on
-// their own PC never gets to go below it, but a camera on a wired LAN feeding a
-// machine in the same rack is a different problem, and holding it two seconds
-// behind is latency bought for a dropout that cannot happen there.
+// never trusted to stay inside the range. A deployment whose camera cannot drop
+// a packet may lower the floor itself, down to and including zero, which is why
+// FloorMS is a pointer and absent is not the same setting as nothing.
 const (
-	DelayFloorMS     = 2000
-	DelayDefaultMS   = 2000
-	DelayMaxMS       = 10000
-	DelayHardFloorMS = 100
+	DelayFloorMS   = 2000
+	DelayDefaultMS = 2000
+	DelayMaxMS     = 10000
 )
 
 // Version is the schema version written to new files.
@@ -55,6 +51,34 @@ const (
 // AllCodecs is every video codec the relay can carry, in preference order.
 func AllCodecs() []string {
 	return []string{CodecH264, CodecH265, CodecAV1}
+}
+
+// CodecLabelOf is how a negotiated RTP mime type is written for a person, so
+// what a phone actually picked can be reported without the config package
+// taking a dependency on the media stack. An empty return is a codec the relay
+// never registered, which no negotiation can settle on.
+func CodecLabelOf(mimeType string) string {
+	for _, name := range AllCodecs() {
+		if strings.EqualFold(mimeType, "video/"+name) {
+			return CodecLabel(name)
+		}
+	}
+
+	return ""
+}
+
+// CodecLabel is how one of the identifiers above is written for a person.
+func CodecLabel(name string) string {
+	switch name {
+	case CodecH264:
+		return "H.264"
+	case CodecH265:
+		return "H.265"
+	case CodecAV1:
+		return "AV1"
+	default:
+		return ""
+	}
 }
 
 // Ingest is one camera: a link pair, a codec set, and a playout target.
@@ -84,8 +108,10 @@ type Config struct {
 
 	// FloorMS lowers the playout floor for a deployment whose cameras are not on
 	// cellular. Absent means DelayFloorMS, which is what a person installing this
-	// on their own machine always gets.
-	FloorMS int      `json:"delayFloorMs,omitempty"`
+	// on their own machine always gets. It is a pointer because zero is a floor a
+	// deployment may legitimately ask for, so absent and zero cannot be the same
+	// value.
+	FloorMS *int     `json:"delayFloorMs,omitempty"`
 	Ingests []Ingest `json:"ingests"`
 
 	// The settings page mutates this while the public signaling listener reads
@@ -196,7 +222,10 @@ func (c *Config) normalise() {
 		c.ControlPort = DefaultControlPort
 	}
 
-	c.FloorMS = clampFloor(c.FloorMS)
+	if c.FloorMS != nil {
+		floor := clampFloor(c.FloorMS)
+		c.FloorMS = &floor
+	}
 
 	for idx := range c.Ingests {
 		ing := &c.Ingests[idx]
@@ -207,17 +236,18 @@ func (c *Config) normalise() {
 }
 
 // clampFloor holds the configured floor inside the range a deployment may pick.
-// Zero means the file said nothing, which is the two second product floor.
-func clampFloor(floorMS int) int {
+// Absent means the file said nothing, which is the two second product floor. A
+// stated zero is honored, which is the whole reason this takes a pointer.
+func clampFloor(floorMS *int) int {
 	switch {
-	case floorMS == 0:
+	case floorMS == nil:
 		return DelayFloorMS
-	case floorMS < DelayHardFloorMS:
-		return DelayHardFloorMS
-	case floorMS > DelayMaxMS:
+	case *floorMS < 0:
+		return 0
+	case *floorMS > DelayMaxMS:
 		return DelayMaxMS
 	default:
-		return floorMS
+		return *floorMS
 	}
 }
 

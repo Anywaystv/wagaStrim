@@ -52,9 +52,11 @@ afternoon. Every addition spends that budget.
   under it: no flag, no "advanced" toggle, no env var. Clamp on config load rather than trusting the
   file. What the floor is protecting is a phone on cellular losing its link for a second or two at a
   time, so a deployment whose camera and player sit on one machine has a different worst case and
-  may lower it through `delayFloorMs`, down to a hard bound of 100 ms below which a buffer cannot
-  reorder anything. That is a deployment setting, written by whatever provisioned the machine, and
-  it never appears in the settings page a person uses.
+  may lower it through `delayFloorMs`, down to and including zero, which is the right buffer for a
+  link that cannot drop a packet. Absent and zero are different settings, so the field is a pointer
+  and only a stated zero disables the buffer. That is a deployment setting, written by whatever
+  provisioned the machine, and it never appears in the settings page a person uses. The default
+  delay stays 2000 ms whatever the floor beneath it says: the floor is a bound, not a preference.
 - No abstraction with one implementation. No interface until there are two callers. The one
   standing exception is `internal/autostart`, which is genuinely three implementations of one
   contract, one file per platform.

@@ -121,6 +121,7 @@ async function poll() {
     }
 
     const parts = [`${snap.bitrateKbps} kbps`, `up ${snap.liveSeconds}s`];
+    if (snap.codec) parts.push(snap.codec);
     if (snap.path) parts.push(snap.path);
     if (snap.switches) parts.push(`${snap.switches} network ${snap.switches === 1 ? "change" : "changes"}`);
     if (snap.pathsTotal) parts.push(`${snap.pathsLive}/${snap.pathsTotal} paths usable`);
@@ -139,7 +140,11 @@ async function poll() {
     : "No cameras streaming.";
 }
 
-setInterval(() => poll().catch(() => {}), 1000);
+// Nothing a person can see changes while the page is hidden, and this one sits
+// behind OBS for hours.
+setInterval(() => {
+  if (!document.hidden) poll().catch(() => {});
+}, 1000);
 poll().catch(() => {});
 
 document.getElementById("check").addEventListener("click", async (ev) => {

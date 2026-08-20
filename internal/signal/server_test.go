@@ -41,7 +41,7 @@ func TestKeyFrom(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			req := httptest.NewRequest(http.MethodPost, "/whip", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/whip", nil)
 			if tc.path != "" {
 				req.SetPathValue("key", tc.path)
 			}

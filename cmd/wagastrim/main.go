@@ -84,7 +84,8 @@ func run(headless bool, log logging.LeveledLogger) error {
 		}
 	}()
 
-	whip, err = ingest.NewServer(cfg, log, engine, hub, counters)
+	whip, err = ingest.NewServer(cfg, log, engine, hub, counters,
+		func(id string) { whep.CloseIngest(id) })
 	if err != nil {
 		return err
 	}

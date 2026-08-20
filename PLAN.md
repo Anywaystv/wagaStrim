@@ -185,6 +185,11 @@ So AV1 is selectable but an iPhone will never pick it, and H.265 may negotiate f
 render black if the flag test fails. Both cases have to be stated next to the toggle at the moment
 of choosing. A codec that cannot survive the whole path is not a codec option, it is a trap.
 
+Which codec is running is discovered, not configured. The toggles state what may be offered; the
+answer states what the phone agreed to, and that is what the stats row reports. Nothing infers it
+from the toggle set, because a camera permitted three codecs is carrying exactly one and the other
+two tell a person nothing.
+
 **Delay** is a playout buffer between ingest and egress. **Floor 2000 ms.** Default 2000, maximum
 10000. The slider does not go below the floor and the config file is clamped on load, not trusted.
 
@@ -197,9 +202,11 @@ turned off the reason they installed this.
 The floor is what that case needs, not a constant of nature, and it is stated as a deployment
 setting rather than a number in the code so it stays honest. `delayFloorMs` lowers it for a machine
 whose camera reaches it over a LAN and whose player is the same box, where the dropout the floor
-buys resilience against cannot happen and two seconds is latency spent on nothing. The hard bound is
-100 ms, since below one frame interval a buffer has nothing to reorder, and the settings page never
-shows the knob: it is written by whatever provisioned the machine. Drift correction follows the
+buys resilience against cannot happen and two seconds is latency spent on nothing. It goes to zero,
+since a wired path between two processes on one machine loses nothing for a buffer to recover, and
+the settings page never shows the knob: it is written by whatever provisioned the machine. A new
+camera still opens at 2000 ms under any floor, because lowering the bound states what is permitted
+and not what is wanted. Drift correction follows the
 target rather than a fixed two second margin, or a low target would never be corrected at all.
 
 **The buffer only recovers packets if the NACK history is as deep as the buffer.** Pion's defaults

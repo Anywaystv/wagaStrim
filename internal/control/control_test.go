@@ -33,7 +33,7 @@ func testServer(t *testing.T) (*Server, *config.Config, *[]string) {
 	// A compositor box: camera and player on one machine, so it lowers the floor
 	// the IRL default exists for.
 	cfg.ControlToken = token
-	cfg.FloorMS = 300
+	cfg.FloorMS = new(300)
 	revoked := &[]string{}
 
 	srv := New(cfg, logging.NewDefaultLoggerFactory().NewLogger("test"), stats.New(),

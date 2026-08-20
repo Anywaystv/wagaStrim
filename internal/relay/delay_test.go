@@ -279,6 +279,26 @@ func TestRetargetReachesARunningBuffer(t *testing.T) {
 		"a retarget must reach a buffer that is already running")
 }
 
+// Lowering the delay while media is queued used to put every packet arriving
+// afterwards in front of everything already waiting, so the relay wrote roughly
+// a target's worth of media out backwards.
+func TestLoweringTheTargetKeepsTheQueueInOrder(t *testing.T) {
+	buf := NewBuffer(time.Second, testClock, "video/H264", nil)
+	defer buf.Close()
+
+	buf.Push(packet(1, 0, idr()...))
+	buf.Push(packet(2, 3000, interFrame()...))
+
+	buf.SetTarget(20 * time.Millisecond)
+	buf.Push(packet(3, 6000, interFrame()...))
+
+	for _, want := range []uint16{1, 2, 3} {
+		got, ok := buf.Pop()
+		require.True(t, ok)
+		assert.Equal(t, want, got.SequenceNumber, "a lowered target must not reorder the output")
+	}
+}
+
 func TestRetargetIgnoresAnUnknownIngest(t *testing.T) {
 	assert.NotPanics(t, func() { New().Retarget("gone", time.Second) })
 }
