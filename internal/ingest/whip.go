@@ -140,6 +140,19 @@ func buildAPI(engine *webrtc.SettingEngine, codecs []string) (*webrtc.API, error
 
 	registry.Add(responder)
 
+	// Outbound, like the responder above: a subscriber is told how much to hold
+	// before it plays anything. See playout.go for why the page cannot be the
+	// only place that asks.
+	if err := media.RegisterHeaderExtension(
+		webrtc.RTPHeaderExtensionCapability{URI: playoutDelayURI},
+		webrtc.RTPCodecTypeVideo,
+		webrtc.RTPTransceiverDirectionSendonly,
+	); err != nil {
+		return nil, fmt.Errorf("%w: playout delay: %w", ErrBuildAPI, err)
+	}
+
+	registry.Add(playoutDelayFactory{})
+
 	return webrtc.NewAPI(
 		webrtc.WithMediaEngine(media),
 		webrtc.WithInterceptorRegistry(registry),
