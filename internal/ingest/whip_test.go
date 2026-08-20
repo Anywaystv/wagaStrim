@@ -40,7 +40,7 @@ func newTestServerWithRelay(t *testing.T) (*Server, *config.Ingest, *relay.Relay
 
 	hub := relay.New()
 
-	srv, err := NewServer(cfg, log, engine, hub, stats.New())
+	srv, err := NewServer(cfg, log, engine, hub, stats.New(), func(string) {})
 	require.NoError(t, err)
 	t.Cleanup(srv.Close)
 
@@ -112,6 +112,9 @@ func TestPublisherMediaReachesTheIngest(t *testing.T) {
 
 		return session.Bytes() > 0
 	}, 15*time.Second, 50*time.Millisecond, "no media arrived on the ingest")
+
+	assert.Equal(t, "H.264", srv.stats.Of(ing.ID).Codec,
+		"the negotiated codec must be discovered from the track, not assumed from the toggles")
 
 	require.NoError(t, srv.Teardown(resource))
 

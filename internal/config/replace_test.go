@@ -4,6 +4,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -103,10 +104,10 @@ func TestReplaceRefusesAListItCannotResolve(t *testing.T) {
 }
 
 // The floor is the product for a phone on cellular. A deployment whose camera
-// and player sit in one rack has a different worst case and may lower it, but
-// only to the hard bound.
-func TestFloorIsADeploymentSettingWithAHardBound(t *testing.T) {
-	cfg := &Config{FloorMS: 300, Ingests: []Ingest{{DelayMS: 300}, {DelayMS: 120}}}
+// and player sit in one rack has a different worst case and may lower it, all
+// the way to nothing.
+func TestALoweredFloorIsHonoredAllTheWayToZero(t *testing.T) {
+	cfg := &Config{FloorMS: new(300), Ingests: []Ingest{{DelayMS: 300}, {DelayMS: 120}}}
 	cfg.normalise()
 
 	assert.Equal(t, 300, cfg.Ingests[0].DelayMS, "a lowered floor must be honored")
@@ -116,8 +117,26 @@ func TestFloorIsADeploymentSettingWithAHardBound(t *testing.T) {
 	absent.normalise()
 	assert.Equal(t, DelayFloorMS, absent.Ingests[0].DelayMS, "saying nothing means the product floor")
 
-	silly := &Config{FloorMS: 1, Ingests: []Ingest{{DelayMS: 1}}}
+	// Zero is the setting a wired deployment actually wants, and it is the one
+	// value a plain int could not tell apart from having said nothing at all.
+	none := &Config{FloorMS: new(0), Ingests: []Ingest{{DelayMS: 0}, {DelayMS: 40}}}
+	none.normalise()
+	assert.Equal(t, 0, none.Ingests[0].DelayMS, "a stated zero floor must pass a zero delay through")
+	assert.Equal(t, 40, none.Ingests[1].DelayMS, "nothing to clamp against once the floor is zero")
+	assert.Equal(t, 0, none.Floor(), "the slider has to be told it may reach zero")
+
+	silly := &Config{FloorMS: new(-500), Ingests: []Ingest{{DelayMS: -500}}}
 	silly.normalise()
-	assert.Equal(t, DelayHardFloorMS, silly.Ingests[0].DelayMS,
-		"below the hard bound a buffer cannot reorder anything")
+	assert.Equal(t, 0, silly.Ingests[0].DelayMS, "a negative buffer is not a buffer")
+}
+
+// A new camera opens at the two second default whatever the floor underneath it
+// says, because the floor is a bound and the default is a recommendation.
+func TestNewIngestDefaultsToTwoSecondsUnderALoweredFloor(t *testing.T) {
+	cfg := &Config{FloorMS: new(0), path: filepath.Join(t.TempDir(), "config.json")}
+
+	ing, err := cfg.AddIngest("wired")
+	require.NoError(t, err)
+
+	assert.Equal(t, DelayDefaultMS, ing.DelayMS, "the default does not follow the floor down")
 }

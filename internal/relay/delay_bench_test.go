@@ -51,6 +51,36 @@ func fixture(n int) []*rtp.Packet {
 	return packets
 }
 
+// The wait path, which is where a healthy stream spends its time: every packet
+// is queued a target ahead of now, so the reader sleeps for each one. What is
+// measured is the allocation, not the sleep.
+func BenchmarkBufferPopWait(b *testing.B) {
+	const spacing = 100 * time.Microsecond
+
+	buf := NewBuffer(0, testClock, "video/H264", nil)
+	defer buf.Close()
+
+	// Timestamps run ahead of the wall clock, so each packet comes due one
+	// spacing after the last and the reader waits on every one of them.
+	packets := fixture(b.N)
+	for i, pkt := range packets {
+		pkt.Timestamp = uint32(i) * uint32(spacing*testClock/time.Second) //nolint:gosec // wrap is intended.
+	}
+
+	for _, pkt := range packets {
+		buf.Push(pkt)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		if _, ok := buf.Pop(); !ok {
+			b.Fatal("buffer drained early")
+		}
+	}
+}
+
 // The heap is the part that changed, so it is measured on its own. Scheduling a
 // packet into the future is the buffer's job and would make this a benchmark of
 // time.Until instead.

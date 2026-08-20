@@ -94,7 +94,7 @@ func TestSoak(t *testing.T) {
 	hub := relay.New()
 	counters := stats.New()
 
-	whip, err := ingest.NewServer(cfg, log, engine, hub, counters)
+	whip, err := ingest.NewServer(cfg, log, engine, hub, counters, func(string) {})
 	require.NoError(t, err)
 
 	defer whip.Close()

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
@@ -35,23 +36,18 @@ type Session struct {
 	IngestID string
 
 	peer  *webrtc.PeerConnection
-	bytes uint64
-	mu    sync.Mutex
+	bytes atomic.Uint64
 }
 
 // Bytes reports how much media has arrived on this session.
 func (s *Session) Bytes() uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.bytes
+	return s.bytes.Load()
 }
 
-func (s *Session) add(count int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.bytes += uint64(count) //nolint:gosec // count comes from a read length and is never negative.
+// add records a packet and returns the running total, so the caller reporting
+// it does not read the counter back through a second lock.
+func (s *Session) add(count int) uint64 {
+	return s.bytes.Add(uint64(count)) //nolint:gosec // count comes from a read length and is never negative.
 }
 
 // Server holds the shared WebRTC stack and the live sessions.
@@ -62,6 +58,12 @@ type Server struct {
 	engine *webrtc.SettingEngine
 	relay  *relay.Relay
 	stats  *stats.Registry
+
+	// stopped disconnects the subscribers of a publisher that has ended. A
+	// subscriber is bound to the track object it was handed, and the publisher
+	// gets a new one when it comes back, so a subscriber left attached sits
+	// there connected and frozen for good. The player page reconnects itself.
+	stopped func(ingestID string)
 
 	mu       sync.Mutex
 	sessions map[string]*Session
@@ -75,6 +77,7 @@ func NewServer(
 	engine *webrtc.SettingEngine,
 	hub *relay.Relay,
 	counters *stats.Registry,
+	stopped func(ingestID string),
 ) (*Server, error) {
 	api, err := buildAPI(engine, config.AllCodecs())
 	if err != nil {
@@ -86,6 +89,7 @@ func NewServer(
 		log:      log,
 		relay:    hub,
 		stats:    counters,
+		stopped:  stopped,
 		api:      api,
 		engine:   engine,
 		sessions: map[string]*Session{},
@@ -261,20 +265,22 @@ func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (s
 		}
 	}
 
-	session := &Session{IngestID: ing.ID, peer: peer}
+	// The resource id is minted before the callbacks are wired, because they
+	// name the session by it. Filling it in afterwards left a window where a
+	// connection that failed early forgot a session called nothing, and the
+	// ingest stayed marked as having a publisher.
+	resource, err := config.NewResourceKey()
+	if err != nil {
+		return "", "", peerpkg.Discard(peer, fmt.Errorf("%w: %w", ErrMintResource, err), s.log)
+	}
+
+	session := &Session{Resource: resource, IngestID: ing.ID, peer: peer}
 	s.watch(ing, session, peer)
 
 	answer, err := peerpkg.Answer(peer, desc)
 	if err != nil {
 		return "", "", peerpkg.Discard(peer, err, s.log)
 	}
-
-	resource, err := newResourceID()
-	if err != nil {
-		return "", "", peerpkg.Discard(peer, err, s.log)
-	}
-
-	session.Resource = resource
 
 	s.mu.Lock()
 	s.sessions[resource] = session
@@ -320,6 +326,13 @@ func (s *Server) clearPrevious(ing config.Ingest) error {
 func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	s.log.Infof("ingest %s: track %s %s", ing.Label, track.Kind(), track.Codec().MimeType)
 
+	// What the publisher settled on, discovered from the negotiation rather than
+	// assumed from the toggles. Stored as the label a person reads, like every
+	// other string in a snapshot. Only the video track has one worth naming.
+	if track.Kind() == webrtc.RTPCodecTypeVideo {
+		s.stats.Codec(ing.ID, config.CodecLabelOf(track.Codec().MimeType))
+	}
+
 	askKeyframe := func() { s.requestKeyframe(peer, track.SSRC()) }
 
 	out, err := s.relay.Publish(ing.ID, track.Kind(), track.Codec().RTPCodecCapability, askKeyframe)
@@ -352,12 +365,12 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 			return
 		}
 
-		session.add(pkt.MarshalSize())
+		total := session.add(pkt.MarshalSize())
 		buf.Push(pkt)
 
 		if track.Kind() == webrtc.RTPCodecTypeVideo {
 			late, dropped := buf.Stats()
-			s.stats.Observe(ing.ID, session.Bytes(), late, dropped)
+			s.stats.Observe(ing.ID, total, late, dropped)
 		}
 	}
 }
@@ -398,6 +411,11 @@ func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 			s.stats.Stopped(ing.ID)
 			s.relay.Drop(ing.ID)
 			s.forget(session.Resource)
+
+			// Last, because it blocks while another server closes every
+			// subscriber. A phone retrying inside that window would otherwise
+			// reach clearPrevious while this ingest still names a dead session.
+			s.stopped(ing.ID)
 		default:
 		}
 	})
@@ -530,15 +548,6 @@ func (s *Server) Close() {
 			s.log.Warnf("close session: %v", err)
 		}
 	}
-}
-
-func newResourceID() (string, error) {
-	key, err := config.NewResourceKey()
-	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrBuildAPI, err)
-	}
-
-	return key, nil
 }
 
 // API exposes the shared WebRTC stack so egress does not build a second one.

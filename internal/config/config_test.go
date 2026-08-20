@@ -74,3 +74,13 @@ func TestSaveIsOwnerOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "-rw-------", info.Mode().String(), "keys live in this file")
 }
+
+// The mime type comes from pion and the identifier is ours, so the mapping is
+// the one place a codec rename would silently stop reporting.
+func TestANegotiatedMimeTypeRendersAsALabel(t *testing.T) {
+	assert.Equal(t, "H.264", CodecLabelOf("video/H264"))
+	assert.Equal(t, "H.265", CodecLabelOf("video/H265"))
+	assert.Equal(t, "AV1", CodecLabelOf("video/AV1"))
+
+	assert.Empty(t, CodecLabelOf("video/VP8"), "a codec the relay never registered has no label")
+}

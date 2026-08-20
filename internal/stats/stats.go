@@ -28,6 +28,11 @@ type Snapshot struct {
 	Path     string `json:"path,omitempty"`
 	Switches int    `json:"switches"`
 
+	// Codec is what the publisher and the server actually agreed on, not what
+	// the camera permits. The toggles say what may be offered; this says what
+	// turned up, which is the only one of the two a person can act on.
+	Codec string `json:"codec,omitempty"`
+
 	// RTT on the nominated pair, and packets the receiver never got. Both come
 	// from the report the pair count is already reading.
 	RTT  int    `json:"rttMs,omitempty"`
@@ -48,6 +53,7 @@ type sample struct {
 type counter struct {
 	samples    []sample
 	path       string
+	codec      string
 	pathsLive  int
 	pathsTotal int
 
@@ -65,9 +71,15 @@ type counter struct {
 	dropped uint64
 
 	// Advice is driven by recent movement, not the lifetime total. A single late
-	// packet an hour ago must not pin "raise the delay" on screen forever.
-	lastMoved time.Time
-	prevBad   uint64
+	// packet an hour ago must not pin "raise the delay" on screen forever. The
+	// two are tracked apart because they say different things: late packets mean
+	// the target is tight, dropped ones mean the buffer gave up and skipped, and
+	// a camera that skipped once at a lower target must not keep being told it is
+	// skipping now.
+	lastMoved   time.Time
+	prevBad     uint64
+	lastSkipped time.Time
+	prevSkipped uint64
 }
 
 // Registry holds one counter per ingest.
@@ -93,6 +105,7 @@ func (r *Registry) Publishing(ingestID string) {
 
 	if previous != nil {
 		fresh.path, fresh.switches = previous.path, previous.switches
+		fresh.codec = previous.codec
 	}
 
 	r.counters[ingestID] = fresh
@@ -134,6 +147,22 @@ func (r *Registry) Path(ingestID, path string) {
 	}
 
 	entry.path = path
+}
+
+// Codec records what the publisher negotiated. Like Path it may arrive before
+// the connection reports itself connected, so a missing counter is created
+// rather than dropped.
+func (r *Registry) Codec(ingestID, codec string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry, ok := r.counters[ingestID]
+	if !ok {
+		entry = &counter{}
+		r.counters[ingestID] = entry
+	}
+
+	entry.codec = codec
 }
 
 // Pairs records how many candidate pairs are usable.
@@ -188,6 +217,11 @@ func (r *Registry) Observe(ingestID string, total, late, dropped uint64) {
 		entry.prevBad = bad
 		entry.lastMoved = now
 	}
+
+	if dropped > entry.prevSkipped {
+		entry.prevSkipped = dropped
+		entry.lastSkipped = now
+	}
 	entry.samples = append(entry.samples, sample{at: now, bytes: total})
 
 	cutoff := now.Add(-window)
@@ -226,6 +260,7 @@ func (r *Registry) Of(ingestID string) Snapshot {
 		RTT:        entry.rtt,
 		Lost:       entry.lost,
 		Path:       entry.path,
+		Codec:      entry.codec,
 		Switches:   entry.switches,
 		PathsLive:  entry.pathsLive,
 		PathsTotal: entry.pathsTotal,
@@ -235,7 +270,9 @@ func (r *Registry) Of(ingestID string) Snapshot {
 		snap.Since = int(time.Since(entry.started).Seconds())
 	}
 
-	snap.Advice = advise(snap, time.Since(entry.lastMoved) < adviceWindow, entry.dropped > 0)
+	snap.Advice = advise(snap,
+		time.Since(entry.lastMoved) < adviceWindow,
+		time.Since(entry.lastSkipped) < adviceWindow)
 
 	return snap
 }

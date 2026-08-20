@@ -21,4 +21,6 @@ var (
 	ErrAlreadyLive = errors.New("ingest already has a publisher")
 	// ErrNoSession is returned when a teardown names a resource that is gone.
 	ErrNoSession = errors.New("no such session")
+	// ErrMintResource is returned when a WHIP resource id cannot be generated.
+	ErrMintResource = errors.New("cannot mint a resource id")
 )

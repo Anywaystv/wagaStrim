@@ -28,6 +28,27 @@
   let resource = null;
   let retry = 1000;
 
+  // sendBeacon can only POST and the teardown route is a DELETE, so nothing a
+  // Browser Source did ever released its session; it sat on the server until
+  // ICE timed out. keepalive is what lets the request outlive the page.
+  const release = () => {
+    if (resource) fetch(resource, { method: "DELETE", keepalive: true }).catch(() => {});
+    resource = null;
+  };
+
+  // A retry that throws has to schedule the next one itself. Without this the
+  // first failed fetch ended the loop, and the Browser Source stayed black
+  // until someone reloaded it by hand. One retry at a time: a rejection that
+  // arrives after the state handler already gave up would otherwise fork the
+  // loop in two, and each half forks again on its next failure.
+  let pending = null;
+  const attempt = () => connect().catch((err) => { say(String(err)); later(); });
+  const later = () => {
+    if (pending) return;
+    pending = setTimeout(() => { pending = null; attempt(); }, retry);
+    retry = Math.min(retry * 2, 15000);
+  };
+
   async function connect() {
     const peer = new RTCPeerConnection();
 
@@ -43,9 +64,9 @@
     peer.onconnectionstatechange = () => {
       if (peer.connectionState === "failed" || peer.connectionState === "disconnected") {
         peer.close();
+        release();
         say("Reconnecting");
-        setTimeout(connect, retry);
-        retry = Math.min(retry * 2, 15000);
+        later();
       }
     };
 
@@ -66,8 +87,7 @@
     if (!res.ok) {
       peer.close();
       say(await res.text());
-      setTimeout(connect, retry);
-      retry = Math.min(retry * 2, 15000);
+      later();
       return;
     }
 
@@ -81,9 +101,7 @@
     document.body.onclick = () => video.play().catch(() => {});
   }
 
-  addEventListener("pagehide", () => {
-    if (resource) navigator.sendBeacon(resource, new Blob([], { type: "text/plain" }));
-  });
+  addEventListener("pagehide", release);
 
-  connect().catch((err) => say(String(err)));
+  attempt();
 </script>

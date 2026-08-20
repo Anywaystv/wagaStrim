@@ -113,17 +113,18 @@ func (r *Relay) Subscribe(ingestID string) ([]*webrtc.TrackLocalStaticRTP, error
 // Track registers a running buffer so a delay change can reach it. A camera in a
 // sync group is retargeted when any member's delay moves, not only its own.
 func (r *Relay) Track(ingestID string, buf *Buffer) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
+	r.mu.RLock()
 	stream, ok := r.streams[ingestID]
+	r.mu.RUnlock()
+
 	if !ok {
 		return
 	}
 
 	stream.mu.Lock()
+	defer stream.mu.Unlock()
+
 	stream.buffers = append(stream.buffers, buf)
-	stream.mu.Unlock()
 }
 
 // Untrack forgets a buffer whose track has ended. Without it a link that
@@ -170,9 +171,10 @@ func (r *Relay) Retarget(ingestID string, target time.Duration) {
 	}
 }
 
-// Drop removes a stream when its publisher goes away. Subscribers stay attached
-// to a silent track rather than being torn down, so a publisher reconnecting
-// does not force every OBS source to be re-added.
+// Drop removes a stream when its publisher goes away. Its subscribers are not
+// left behind: they hold the track object this stream was writing into, and the
+// publisher gets a fresh one when it returns, so the ingest server disconnects
+// them in the same breath as calling this.
 func (r *Relay) Drop(ingestID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

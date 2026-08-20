@@ -76,11 +76,6 @@ type codecChoice struct {
 }
 
 func codecChoices(on []string) []codecChoice {
-	labels := map[string]string{
-		config.CodecH264: "H.264",
-		config.CodecH265: "H.265",
-		config.CodecAV1:  "AV1",
-	}
 	caveats := map[string]string{
 		config.CodecH265: "Needs OBS started with --enable-features=WebRtcAllowH265Receive. " +
 			"Its bundled Chromium is 133, which has the flag but not the default.",
@@ -93,7 +88,7 @@ func codecChoices(on []string) []codecChoice {
 	for _, name := range config.AllCodecs() {
 		out = append(out, codecChoice{
 			Name:   name,
-			Label:  labels[name],
+			Label:  config.CodecLabel(name),
 			On:     slices.Contains(on, name),
 			Caveat: caveats[name],
 		})
@@ -147,11 +142,42 @@ func New(
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
 
 	srv.http = &http.Server{
-		Handler:           mux,
+		Handler:           loopbackOnly(mux, cfg.UIPort),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	return srv, nil
+}
+
+// loopbackOnly refuses anything that did not come from a page this listener
+// served. Binding to 127.0.0.1 stops another machine from connecting, and that
+// is the whole of the authorization model, but it does not stop a page someone
+// is already looking at from reaching in: a cross-site form post arrives over
+// the browser's own loopback socket and deletes a camera, and a hostname the
+// author points at 127.0.0.1 makes the browser treat this page as that author's
+// origin and read the stream keys straight out of the HTML.
+//
+// The Host header answers the second, since a rebound name is not one of ours,
+// and Sec-Fetch-Site answers the first. Script cannot set either. A caller that
+// is not a browser sends no Sec-Fetch-Site at all and is unaffected.
+func loopbackOnly(next http.Handler, port int) http.Handler {
+	ours := map[string]bool{
+		fmt.Sprintf("127.0.0.1:%d", port): true,
+		fmt.Sprintf("localhost:%d", port): true,
+		fmt.Sprintf("[::1]:%d", port):     true,
+	}
+
+	return http.HandlerFunc(func(wri http.ResponseWriter, req *http.Request) {
+		site := req.Header.Get("sec-fetch-site")
+
+		if !ours[req.Host] || (site != "" && site != "same-origin" && site != "none") {
+			http.Error(wri, "not found", http.StatusNotFound)
+
+			return
+		}
+
+		next.ServeHTTP(wri, req)
+	})
 }
 
 // Addr is the loopback URL a browser or the tray should open.
@@ -252,7 +278,10 @@ func (s *Server) writeJSON(wri http.ResponseWriter, body any) {
 
 func (s *Server) handleHealth(wri http.ResponseWriter, _ *http.Request) {
 	wri.Header().Set("content-type", "text/plain")
-	s.write(wri, []byte("ok\n"))
+
+	if _, err := wri.Write([]byte("ok\n")); err != nil {
+		s.log.Warnf("write health: %v", err)
+	}
 }
 
 func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
@@ -422,12 +451,6 @@ func (s *Server) applyDelay(id string) {
 func (s *Server) fail(wri http.ResponseWriter, status int, err error) {
 	s.log.Warnf("request failed: %v", err)
 	http.Error(wri, http.StatusText(status), status)
-}
-
-func (s *Server) write(wri http.ResponseWriter, buf []byte) {
-	if _, err := wri.Write(buf); err != nil {
-		s.log.Warnf("write response: %v", err)
-	}
 }
 
 func decode(req *http.Request, into any) error {

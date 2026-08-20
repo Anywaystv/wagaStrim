@@ -173,7 +173,7 @@ func fixture(t *testing.T, mode routing) (func() uint16, *arrivals, *paths) {
 	log := logging.NewDefaultLoggerFactory().NewLogger("bonded")
 	hub := relay.New()
 
-	whip, err := ingest.NewServer(cfg, log, engine, hub, stats.New())
+	whip, err := ingest.NewServer(cfg, log, engine, hub, stats.New(), func(string) {})
 	require.NoError(t, err)
 	t.Cleanup(whip.Close)
 
