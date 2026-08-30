@@ -47,10 +47,14 @@ jobs:
       - name: lint headless build
         run: golangci-lint run --build-tags notray
 
+      # darwin needs notray here and windows does not: systray's darwin support
+      # lives entirely in cgo files, which a linux runner with CGO_ENABLED unset
+      # cannot type check, while its windows support is plain Go. Same reason
+      # the darwin cross compile below builds notray.
       - name: lint windows and darwin
         run: |
           GOOS=windows golangci-lint run
-          GOOS=darwin golangci-lint run
+          GOOS=darwin golangci-lint run --build-tags notray
 
       # dupl cannot see a copy in another package or behind a build tag.
       - name: duplicate function bodies
