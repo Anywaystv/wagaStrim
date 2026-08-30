@@ -23,7 +23,6 @@ const (
 
 // Status reports whether the Run value exists and still points at this binary.
 func Status(_ context.Context) State {
-
 	key, err := registry.OpenKey(registry.CURRENT_USER, runKey, registry.QUERY_VALUE)
 	if err != nil {
 		return State{}
@@ -47,7 +46,6 @@ func Status(_ context.Context) State {
 // Enable writes the Run value, quoting the path so a space in it does not split
 // the command.
 func Enable(_ context.Context) error {
-
 	binary, err := binaryPath()
 	if err != nil {
 		return err
@@ -69,7 +67,6 @@ func Enable(_ context.Context) error {
 
 // Disable removes the value. A missing value is already the wanted state.
 func Disable(_ context.Context) error {
-
 	key, err := registry.OpenKey(registry.CURRENT_USER, runKey, registry.SET_VALUE)
 	if err != nil {
 		return nil //nolint:nilerr // no key means nothing to remove.

@@ -107,7 +107,7 @@ func (s *Server) negotiate(
 // a different camera.
 //
 // An empty result is not special-cased here. It resolves to no camera like any
-// other key that names nothing, and comes back as the same 404 — a request with
+// other key that names nothing, and comes back as the same 404. A request with
 // no credential learns nothing a request with a wrong one does not.
 func keyFrom(req *http.Request) string {
 	if key := req.PathValue("key"); key != "" {

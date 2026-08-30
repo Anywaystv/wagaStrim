@@ -167,6 +167,14 @@ func buildAPI(engine *webrtc.SettingEngine, codecs []string) (*webrtc.API, error
 // pion gives to VP8 and which is what the phone apps tested here send. None of
 // it is load bearing, because an answer carries the payload types the offer
 // named, not these.
+//
+// The fmtp lines are the same story and it is worth saying out loud, because
+// Opus below carries none and that reads like an oversight against pion's own
+// default of "minptime=10;useinbandfec=1". An answer's fmtp also comes from the
+// offer, and wagaStrim only ever answers, so what is written here never reaches
+// the wire. Adding useinbandfec here would not switch in-band FEC on: the
+// publisher already sees it, because it is the parameter it sent us. Measured
+// both ways on Publish, 2026-08-30.
 func registerCodecs(media *webrtc.MediaEngine, codecs []string) error {
 	wanted := map[string]bool{}
 	for _, name := range codecs {
