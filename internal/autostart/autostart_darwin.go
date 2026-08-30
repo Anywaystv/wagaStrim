@@ -12,6 +12,10 @@ import (
 	"strings"
 )
 
+// serviceManager is the only command run in this file, and run takes it from
+// here rather than as an argument.
+const serviceManager = "launchctl"
+
 const agentLabel = "tv.anyways.wagastrim"
 
 func plistPath() (string, error) {
@@ -66,9 +70,9 @@ func Enable(ctx context.Context) error {
 
 	// Unload first so repairing a stale entry replaces the running definition
 	// rather than leaving the old one loaded.
-	_ = run(ctx, "launchctl", "bootout", domain()+"/"+agentLabel)
+	_ = run(ctx, "bootout", domain()+"/"+agentLabel)
 
-	if err := run(ctx, "launchctl", "bootstrap", domain(), path); err != nil {
+	if err := run(ctx, "bootstrap", domain(), path); err != nil {
 		return fmt.Errorf("%w: %w", ErrRegister, err)
 	}
 
@@ -82,7 +86,7 @@ func Disable(ctx context.Context) error {
 		return err
 	}
 
-	_ = run(ctx, "launchctl", "bootout", domain()+"/"+agentLabel)
+	_ = run(ctx, "bootout", domain()+"/"+agentLabel)
 
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("%w: %w", ErrUnregister, err)
