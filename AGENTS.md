@@ -9,6 +9,16 @@ A single Go binary that runs on a streamer's PC, takes a WHIP ingest from a phon
 a WHEP link. Two links, one delay slider, one stats row. Everything else is out of scope until
 that works and is boring.
 
+The same binary has a second home, and half the commits on `whip-for-compositors` exist for it.
+afk-stream provisions a Hetzner box per streamer, and wagaStrim runs headless on that box: the
+phone publishes to it over WHIP and the subscriber is the box's own Chromium over WHEP, rendering
+a scene that ffmpeg then encodes to Twitch or Kick. That deployment is why there is a control
+port, why keys can be supplied rather than generated, why `delayFloorMs` reaches zero, and why
+the media port is configurable. It is not a second product and must not become one: everything it
+needs is a value in a config file written by whatever provisioned the machine, never a second code
+path and never a setting on the page a person uses. Where a rule below says "a streamer's PC",
+read it as the product; where it says "a deployment", read it as this.
+
 ## Minimalism is the product
 
 The reason to choose this over BELABOX or a cloud ingest is that it is small enough to read in an
@@ -36,9 +46,12 @@ afternoon. Every addition spends that budget.
   function, no allocation in a read loop that a pooled buffer avoids, no polling where a signal
   works, and genuinely idle when nothing is streaming. Claims still need a benchmark or a pprof
   profile in the PR; what does not need proof is the choice to keep the hot path short.
-- Pion, a tray library, and `testify` in tests are the entire dependency budget. It has already
-  been spent. Adding a fourth needs a line in the PR saying what it replaced and why writing it
-  ourselves was worse.
+- Pion, a tray library, `golang.org/x/sys`, and `testify` in tests are the entire dependency
+  budget. It has already been spent. Adding a fifth needs a line in the PR saying what it replaced
+  and why writing it ourselves was worse. `x/sys` is on the list because two platform calls have
+  no standard library spelling at all, the Windows registry in `internal/autostart` and the socket
+  buffer sysctl in `internal/ingest`; it is the extension of the standard library it looks like,
+  not a fourth opinion about how to write Go.
 - Media dependencies specifically are closed. `gortsplib`, `gosrt`, an RTMP server, an MPEG-TS
   muxer, and an AAC encoder were each evaluated and rejected with reasons recorded in `PLAN.md`.
   Do not reintroduce one without reading that table first; the usual trigger is wanting HEVC in a
@@ -138,8 +151,9 @@ Output that reads as machine-generated gets rejected regardless of whether it wo
 - Never let a user pick a combination that cannot work and find out from a black screen. A codec
   the chosen receiver path cannot decode must be flagged where it is chosen, not diagnosed later.
 - Do not claim a feature exists before it does. Specifically: the bonded receive path works, but
-  nothing in the UI or README says "bonded" until a sender exists that actually sprays over
-  multiple candidates. Until then the word is failover.
+  nothing a person reads says "bonded" until a sender exists that actually sprays over multiple
+  candidates. Until then the word is failover. As of 2026-08-30 the UI says neither, because it
+  does not mention multiple paths at all; the rule binds whenever it starts to.
 - No speculative generality. No config knob, hook, or extension point added "for later".
 - Run `/slop-check` on the diff before opening a PR.
 
@@ -150,6 +164,17 @@ Never push straight from generation.
 1. Re-read the full diff yourself, top to bottom, as a reviewer and not as the author.
 2. Run `gofumpt -l .`, `go vet ./...`, `golangci-lint run`, `scripts/dupes.py`, and
    `go test -race ./...`. All clean, no exceptions, no `//nolint` added to make it so.
+
+   Two of those need a word, because both were quietly untrue on 2026-08-30 and a gate nobody can
+   pass is a gate nobody runs. `golangci-lint run` builds for the host only, so it had never once
+   looked at `autostart_windows.go`, which had been failing `gofumpt` unnoticed; run
+   `GOOS=windows golangci-lint run` too, and cross-build `windows/amd64` and
+   `linux/amd64 CGO_ENABLED=0 -tags notray` before believing a formatting or lint result. And
+   `internal/bonded` fails intermittently under load on an unmodified tree, most often
+   `TestMediaSplitAcrossPathsArrivesWhole` giving up on its 30s `Eventually`; it passes on a quiet
+   machine and in a full `go test ./...` run. Re-run it alone before concluding a change broke it,
+   and do not paper over it by lengthening the timeout, which would hide the thing worth knowing.
+   This is separate from the pion data race under `-race` noted in `PLAN.md`.
 3. Run `/code-review` on the diff. Fix or explicitly justify every finding.
 4. Run `/slop-check`.
 5. Only then commit.
@@ -165,9 +190,11 @@ later by someone who cannot tell why the code is shaped that way.
 
 ## Commits and PRs
 
-There is no GitHub remote yet and there will not be one until the project is done. Everything
-below still applies to local history. A messy local log becomes a messy public log the moment the
-repo is created, and nobody rewrites it at that point.
+The remote is `MarcFryd/wagaStrim`, private, agreed on 2026-08-30. It stays private until the
+README is honest about what ships; the public flip is a separate decision and not a consequence of
+the repo existing. Everything here applied to local history before there was a remote and applies
+unchanged now, because the reason never depended on one: a messy log becomes a public log the
+moment the repo is flipped, and nobody rewrites it at that point.
 
 We are deliberately slow. Repository noise is the failure mode here, not slow delivery.
 
@@ -182,7 +209,9 @@ We are deliberately slow. Repository noise is the failure mode here, not slow de
   PR. Fold it into the change that motivated it.
 - No "wip", "fix", "update", or "address feedback" messages. Every message names the behaviour
   that changed.
-- Conventional prefixes: `feat:`, `fix:`, `perf:`, `refactor:`, `docs:`, `chore:`.
+- Conventional prefixes: `feat:`, `fix:`, `perf:`, `refactor:`, `docs:`, `chore:`, `build:`,
+  `test:`. Two commits predate the list and do not carry one; leave them, since renaming a commit
+  to satisfy a rule written after it is the paperwork this file exists to avoid.
 - PR bodies: what changed, why, how it was verified. Three short paragraphs at most, no template,
   no checklist theatre, no generated summary.
 - Never amend or force-push a branch someone else has pulled.
@@ -197,8 +226,27 @@ The repository is going public. It must look like it was written by a person.
 - No `Co-Authored-By: Claude` trailers, no "Generated with Claude Code" footers, no assistant
   attribution anywhere in commits, PRs, issues, or code comments.
 - No `.claude` directory committed, ever, including workflow or settings files.
-- Before repo creation: `git log --all -p | grep -iE 'claude|serena'` must return nothing, not
-  just `git ls-files`. A file that was committed and later ignored still sits in history.
+- Check history, not just `git ls-files`: a file that was committed and later ignored still sits
+  in history. What must return nothing is the attribution, not the word:
+
+  ```bash
+  git log <branch> -p -- . ':(exclude)AGENTS.md' \
+    | grep -iE 'co-authored-by: claude|generated with claude|claude code|^Author: Claude'
+  ```
+
+  Two things about the shape of that command, both learned by getting them wrong. A bare
+  `grep -i claude` cannot be the check, because three tracked files have to contain the word to do
+  their job: `.gitignore` and `.dockerignore` name `CLAUDE.md` in order to exclude it, and this
+  section is called what it is called. `AGENTS.md` is excluded for the same reason, since it quotes
+  the very strings being searched for and would otherwise report itself forever. And it names the
+  branch rather than `--all`, because `--all` walks every ref including `refs/claude/*`, which the
+  assistant's own tooling writes: this repository carries
+  `refs/claude/checkpoint-d04b10d6`, a commit authored by "Claude Code" holding a resume
+  checkpoint. It is not under `refs/heads/`, so pushing a branch never sends it and no branch here
+  contains it. **Never `git push --mirror` from this repository**, which would push exactly that. That grep was the rule here until 2026-08-30, it
+  could never have passed, and an unpassable check gets waved through rather than run. It caught
+  nothing when it was finally run either way: one trailer on `80b9b47`, scrubbed before the repo
+  was created.
 
 ## UI
 

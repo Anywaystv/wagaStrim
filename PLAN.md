@@ -246,8 +246,35 @@ a skip. Below target, hold and refill; never drain below the floor. Log every co
 stream corrects repeatedly, say so in the UI, because it means the target is too low for that
 connection.
 
-**Loss handling on ingest** is NACK and RTX plus the buffer above. Not FEC, because Moblin will not send
-FlexFEC, so there is nothing to decode. Revisit only if we ship our own sender.
+**Loss handling on ingest** is NACK plus the buffer above. Not RTX: `videoCodecs` registers H.264,
+H.265 and AV1 and no `MimeTypeRTX` alongside them, so RFC 4588 is never negotiated and a NACK is
+answered on the original SSRC. This line said "NACK and RTX" until 2026-08-30 and was wrong.
+
+Not FEC either, on video, for two reasons and not one. Moblin does not send FlexFEC, and
+`pion/interceptor/pkg/flexfec` has no decoder interceptor to read it with if it did. The reason
+that would survive both being fixed is the trade: FEC spends bandwidth on every packet whether or
+not anything was lost, while a NACK spends it only on loss, and the delay floor is far more time
+than a retransmission needs on any link where the phone is reachable at all. FEC earns its place
+where there is no time to ask again. Revisit only if we ship our own sender, or for a one-way link.
+
+**Audio recovers by in-band FEC, and we neither enable nor can enable it.** Opus LBRR carries a
+low-rate copy of the previous frame inside the next packet, which is the right mechanism for audio
+because NACK is not negotiated for it and a retransmission would miss its playout slot anyway.
+It is switched on by `useinbandfec=1` in the fmtp, and the publisher sees that parameter in our
+answer, but the value is the one it offered: pion builds an answer's fmtp from the offer, not from
+the registered codec, and wagaStrim never creates an offer. Measured on the real `Publish` path on
+2026-08-30, an offer with no fmtp is answered with no fmtp and an offer carrying
+`minptime=10;useinbandfec=1` is answered with it unchanged, whatever this side registers. Moblin
+and OBS both offer it, so LBRR is on, and the relay forwards Opus payloads opaquely so the
+redundancy rides through untouched. Nothing to do, and nothing that can be done from here: the
+Opus registration in `registerCodecs` is inert on this path, and adding a parameter to it would
+change the wire not at all.
+
+DRED is the successor to that mechanism and is not an option. It is still an IETF draft
+(`draft-ietf-mlcodec-opus-dred`), shipped Chromium negotiates plain RFC 2198 RED behind a field
+trial rather than DRED, and producing it would mean libopus, which means cgo, which ends the
+static Linux build. A relay that forwards payloads would carry it transparently the day both ends
+speak it, and that is the whole of our involvement.
 
 **Renomination** is on, so a phone moving between Wi-Fi and cellular re-homes without a
 reconnect. Enabled via `SettingEngine.SetICERenomination`; note it acts on the controlling agent.
@@ -271,7 +298,7 @@ specification put the key in `Authorization: Bearer` and leave the URL clean, so
 that header resolves identically. The path wins when a client somehow sends both: it is the half a
 person can see in front of them, so a stale token left in an encoder's other field cannot silently
 redirect a publish. A request carrying no key at all resolves to no ingest and gets the same 404 as
-one carrying a wrong key — a caller with nothing learns nothing a caller with rubbish does not.
+one carrying a wrong key. A caller with nothing learns nothing a caller with rubbish does not.
 
 **Refuse a swapped link, and say which way round it goes.** Both WHIP and WHEP are a POST of
 `application/sdp`, so the endpoint cannot tell the two clients apart by method or content type.
@@ -574,8 +601,9 @@ Settled, recorded so it is not rediscovered:
   has on PATH. `pion/webrtc v4.2.18` resolves and the renomination, replay-window, and NACK-sizing
   calls in this plan were compile-checked against it.
 - Windows and Linux are both primary. Only the tray is platform-specific; see Platforms above.
-- No GitHub repo until the project is done. Work stays in this directory. `MarcFryd/wagaStrim`
-  gets created private at the end, then flipped public once the README is honest about what ships.
-- License: MIT unless you say otherwise. Added at repo creation, not before.
+- `MarcFryd/wagaStrim` is created private, agreed 2026-08-30, and flipped public once the README
+  is honest about what ships. There is no README yet, which makes writing one the last item
+  standing between here and public, not a documentation chore to fit in afterwards.
+- License: MIT. `LICENSES/MIT.txt` and `.reuse/dep5` are in the tree, added ahead of repo creation.
 - The README leads with the Browser Source setup, since that is the only step the target audience
   has to get right and two of its checkboxes are easy to miss.
