@@ -20,8 +20,8 @@ jobs:
     name: Lint and test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -33,14 +33,24 @@ jobs:
       - name: vet
         run: go vet ./...
 
-      - uses: golangci/golangci-lint-action@v6
+      # v7 and up for a golangci-lint v2 config. v6 refuses one outright:
+      # "golangci-lint v2 is not supported by golangci-lint-action v6".
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.10.1
+          version: v2.13.1
 
-      # golangci-lint runs one GOOS at a time, so the tray and headless variants
-      # are separate passes or half the code is never linted.
+      # golangci-lint type checks one GOOS and one tag set at a time, so a file
+      # behind a build constraint is never looked at unless it is asked for by
+      # name. That is not hypothetical: autostart_windows.go had been failing
+      # gofumpt since it was written and nothing reported it, because the only
+      # pass that ran was linux with the tray in.
       - name: lint headless build
         run: golangci-lint run --build-tags notray
+
+      - name: lint windows and darwin
+        run: |
+          GOOS=windows golangci-lint run
+          GOOS=darwin golangci-lint run
 
       # dupl cannot see a copy in another package or behind a build tag.
       - name: duplicate function bodies
@@ -58,10 +68,16 @@ jobs:
           - { goos: linux, goarch: amd64, tags: notray }
           - { goos: linux, goarch: arm64, tags: notray }
           - { goos: windows, goarch: amd64, tags: "" }
-          - { goos: darwin, goarch: arm64, tags: "" }
+          # notray, unlike the others with a tray: the macOS tray is the one
+          # package that needs cgo, and CGO_ENABLED=0 below cannot build it
+          # (systray's darwin symbols are all in its cgo files, so the build
+          # fails on undefined nativeLoop and a dozen siblings). What this job
+          # is for is proving the rest of the tree is cgo free on darwin too;
+          # the tray build happens on a real mac at release time.
+          - { goos: darwin, goarch: arm64, tags: notray }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       # CGO off everywhere: only the macOS tray needs it, and that build is done
