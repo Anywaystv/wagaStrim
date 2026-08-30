@@ -11,6 +11,10 @@ import (
 	"strings"
 )
 
+// serviceManager is the only command run in this file, and run takes it from
+// here rather than as an argument.
+const serviceManager = "systemctl"
+
 const unitName = "wagastrim.service"
 
 func unitPath() (string, error) {
@@ -70,9 +74,9 @@ func Enable(ctx context.Context) error {
 
 	// Reload so a rewritten unit replaces the old definition rather than
 	// leaving systemd running the previous binary path.
-	_ = run(ctx, "systemctl", "--user", "daemon-reload")
+	_ = run(ctx, "--user", "daemon-reload")
 
-	if err := run(ctx, "systemctl", "--user", "enable", "--now", unitName); err != nil {
+	if err := run(ctx, "--user", "enable", "--now", unitName); err != nil {
 		return fmt.Errorf("%w: %w", ErrRegister, err)
 	}
 
@@ -86,13 +90,13 @@ func Disable(ctx context.Context) error {
 		return err
 	}
 
-	_ = run(ctx, "systemctl", "--user", "disable", "--now", unitName)
+	_ = run(ctx, "--user", "disable", "--now", unitName)
 
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("%w: %w", ErrUnregister, err)
 	}
 
-	_ = run(ctx, "systemctl", "--user", "daemon-reload")
+	_ = run(ctx, "--user", "daemon-reload")
 
 	return nil
 }
