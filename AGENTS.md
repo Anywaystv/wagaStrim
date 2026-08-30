@@ -168,8 +168,21 @@ Never push straight from generation.
    Two of those need a word, because both were quietly untrue on 2026-08-30 and a gate nobody can
    pass is a gate nobody runs. `golangci-lint run` builds for the host only, so it had never once
    looked at `autostart_windows.go`, which had been failing `gofumpt` unnoticed; run
-   `GOOS=windows golangci-lint run` too, and cross-build `windows/amd64` and
-   `linux/amd64 CGO_ENABLED=0 -tags notray` before believing a formatting or lint result. And
+   it for the platforms you are not on, or a finding that exists on one of them never appears:
+
+   ```bash
+   GOOS=linux golangci-lint run
+   GOOS=windows golangci-lint run
+   GOOS=darwin golangci-lint run --build-tags notray
+   ```
+
+   All three, not just the two you are not developing on. `unparam` reported a redundant argument
+   that existed only under the linux build constraints, and it survived a pass that covered
+   windows and darwin from a mac precisely because linux was the platform nobody ran. `darwin`
+   takes `notray` when cgo is unavailable, which is always true on the CI runner and true locally
+   whenever `CGO_ENABLED=0`: systray keeps all its darwin support in cgo files. Cross-build
+   `windows/amd64`, `darwin/arm64 -tags notray` and `linux/amd64 -tags notray`, all at
+   `CGO_ENABLED=0`, before believing a formatting or lint result. And
    `internal/bonded` fails intermittently under load on an unmodified tree, most often
    `TestMediaSplitAcrossPathsArrivesWhole` giving up on its 30s `Eventually`; it passes on a quiet
    machine and in a full `go test ./...` run. Re-run it alone before concluding a change broke it,
