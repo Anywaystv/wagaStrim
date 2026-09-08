@@ -96,10 +96,14 @@ type Ingest struct {
 type Config struct {
 	Version    int    `json:"version"`
 	PublicHost string `json:"publicHost"`
-	MediaPort  int    `json:"mediaPort"`
-	SignalPort int    `json:"signalPort"`
-	UIPort     int    `json:"uiPort"`
-	Autostart  bool   `json:"autostart"`
+	// ICEPublicIPs are addresses reached through a 1:1 UDP port forward.
+	// Legacy public/local entries are accepted, but only the public half is
+	// advertised. Local candidates remain available for nearby subscribers.
+	ICEPublicIPs []string `json:"icePublicIPs,omitempty"`
+	MediaPort    int      `json:"mediaPort"`
+	SignalPort   int      `json:"signalPort"`
+	UIPort       int      `json:"uiPort"`
+	Autostart    bool     `json:"autostart"`
 
 	// ControlToken turns the control listener on. Empty means a deployment owns
 	// nothing here and the listener never binds, which is every desktop install.

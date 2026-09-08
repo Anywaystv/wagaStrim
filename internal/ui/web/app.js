@@ -149,21 +149,49 @@ poll().catch(() => {});
 
 document.getElementById("check").addEventListener("click", async (ev) => {
   const out = document.getElementById("reach");
+  const status = document.getElementById("reach-status");
   out.textContent = "Checking";
+  status.textContent = "Checking";
 
   try {
     const res = await fetch("/api/reachability");
     const r = await res.json();
-    const lan = r.lanHosts.length ? ` On this network: ${r.lanHosts.join(", ")}.` : "";
-    const pub = r.publicHost ? `Public address ${r.publicHost}. ` : "";
+    const lines = [];
+    if (r.publicHost) lines.push(["Public IP: ", r.publicHost, " - for streaming over the internet."]);
+    for (const host of r.lanHosts) {
+      lines.push(["Local IP: ", host, " - for streaming on that network (Wi-Fi, LAN or VPN)."]);
+    }
+    lines.push(
+      ["Connection setup: ", `TCP ${r.signalPort}`, " - WHIP from your phone and WHEP to your player."],
+      ["Audio and video: ", `UDP ${r.mediaPort}`, " - carries the live media in both directions."],
+      [r.note, "", ""],
+      ["For internet access, forward both ports to this computer on your router.", "", ""],
+    );
+    if (r.socketNote) lines.push([r.socketNote, "", ""]);
 
-    out.textContent = pub + r.note + lan +
-      ` Forward udp/${r.mediaPort} and tcp/${r.signalPort}.` +
-      (r.socketNote ? " " + r.socketNote : "");
+    out.replaceChildren();
+    for (const [label, value, detail] of lines) {
+      const line = document.createElement("span");
+      const bold = document.createElement("strong");
+      bold.textContent = value;
+      line.append(label, bold, detail);
+      out.append(line);
+    }
+    status.textContent = r.publicHost ? "Address checked." : "No public IP found.";
 
-    if (r.publicHost) setTimeout(() => location.reload(), 1200);
+    // Refresh the links without reloading away the check result.
+    if (r.publicHost) {
+      const host = r.publicHost.includes(":") ? `[${r.publicHost}]` : r.publicHost;
+      for (const box of document.querySelectorAll(".secret[data-secret]")) {
+        const link = new URL(box.dataset.secret);
+        link.host = `${host}:${r.signalPort}`;
+        box.dataset.secret = link.href;
+        if (!box.classList.contains("masked")) box.textContent = link.href;
+      }
+    }
   } catch (err) {
     out.textContent = "Could not check: " + err;
+    status.textContent = "Check failed.";
     ev.target.textContent = "Retry";
   }
 });
