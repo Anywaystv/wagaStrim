@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/MarcFryd/wagaStrim/internal/autostart"
@@ -46,9 +47,13 @@ type Server struct {
 
 // pageData is what the template sees.
 type pageData struct {
-	Ingests      []cameraView
-	SenderBase   string
-	ReceiverBase string
+	Ingests          []cameraView
+	SenderBase       string
+	ReceiverBase     string
+	SecureSignal     bool
+	LANControl       bool
+	RemoteControl    bool
+	ControlAvailable bool
 
 	// The slider cannot render a bound it does not know. A deployment that
 	// lowered the floor would otherwise show a control that refuses its own
@@ -125,6 +130,7 @@ func New(
 	mux.HandleFunc("GET /api/reachability", srv.handleReachability)
 	mux.HandleFunc("GET /api/autostart", srv.handleAutostart)
 	mux.HandleFunc("POST /api/autostart", srv.handleSetAutostart)
+	mux.HandleFunc("POST /api/control/{scope}", srv.handleControlAccess)
 
 	// Profiling lives on the loopback listener and nowhere else. It exposes
 	// memory contents and can be made to burn a core, so it must never be
@@ -202,7 +208,7 @@ func (s *Server) handleReachability(wri http.ResponseWriter, req *http.Request) 
 	report.SocketNote = socketNote()
 
 	// Remember a discovered address so the links stop reading as a placeholder.
-	if report.PublicHost != "" {
+	if report.PublicHost != "" && s.cfg.TLSCert == "" && s.cfg.PublicURL == "" {
 		if err := s.cfg.SetPublicHost(report.PublicHost); err != nil {
 			s.log.Warnf("save public host: %v", err)
 		}
@@ -301,17 +307,22 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	senderBase, receiverBase := s.cfg.SignalLinks(host)
 	data := pageData{
 		Ingests: views,
 		Floor:   s.cfg.Floor(),
 		// Moblin chooses the protocol from the scheme and rewrites whip to http
 		// itself, so it rejects a link that already says http. The line under the
 		// field tells anyone using another WHIP client to put http back.
-		SenderBase: fmt.Sprintf("whip://%s:%d/whip/", host, s.cfg.SignalPort),
+		SenderBase: senderBase,
 		// The Browser Source path is the default, so the receiver link is the
 		// player page rather than the raw WHEP endpoint. A WHEP client can still
 		// reach /whep/<same key> directly.
-		ReceiverBase: fmt.Sprintf("http://%s:%d/player/", host, s.cfg.SignalPort),
+		ReceiverBase:     receiverBase,
+		SecureSignal:     strings.HasPrefix(receiverBase, "https://"),
+		LANControl:       s.cfg.LANControlEnabled(),
+		RemoteControl:    s.cfg.RemoteControlEnabled(),
+		ControlAvailable: s.cfg.ControlToken != "",
 	}
 
 	wri.Header().Set("content-type", "text/html; charset=utf-8")
@@ -319,6 +330,29 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 	if err := s.tpl.Execute(wri, data); err != nil {
 		s.log.Errorf("render: %v", err)
 	}
+}
+
+func (s *Server) handleControlAccess(wri http.ResponseWriter, req *http.Request) {
+	scope := req.PathValue("scope")
+	if scope != "lan" && scope != "remote" {
+		http.Error(wri, "not found", http.StatusNotFound)
+
+		return
+	}
+	var body struct {
+		On *bool `json:"on"`
+	}
+	if err := decode(req, &body); err != nil || body.On == nil {
+		http.Error(wri, "on must be true or false", http.StatusBadRequest)
+
+		return
+	}
+	if err := s.cfg.SetControlAccess(scope, *body.On); err != nil {
+		http.Error(wri, "could not save control access", http.StatusInternalServerError)
+
+		return
+	}
+	wri.WriteHeader(http.StatusNoContent)
 }
 
 // mutate decodes a request body and runs a change against the config. All five

@@ -153,24 +153,19 @@ poll().catch(() => {});
 document.getElementById("check").addEventListener("click", async (ev) => {
   const out = document.getElementById("reach");
   const status = document.getElementById("reach-status");
-  out.textContent = "Checking";
+  out.replaceChildren();
   status.textContent = "Checking";
 
   try {
     const res = await fetch("/api/reachability");
     const r = await res.json();
     const lines = [];
-    if (r.publicHost) lines.push(["Public IP: ", r.publicHost, " - for streaming over the internet."]);
-    for (const host of r.lanHosts) {
-      lines.push(["Local IP: ", host, " - for streaming on that network (Wi-Fi, LAN or VPN)."]);
-    }
+    if (r.publicHost) lines.push(["Internet: ", r.publicHost, ""]);
+    if (r.lanHosts?.length) lines.push(["Wi-Fi / VPN: ", r.lanHosts.join(", "), ""]);
     lines.push(
-      ["Connection setup: ", `TCP ${r.signalPort}`, " - WHIP from your phone and WHEP to your player."],
-      ["Audio and video: ", `UDP ${r.mediaPort}`, " - carries the live media in both directions."],
-      [r.note, "", ""],
-      ["For internet access, forward both ports to this computer on your router.", "", ""],
+      ["Ports: ", `TCP ${r.signalPort}`, ` setup · UDP ${r.mediaPort} media`],
     );
-    if (r.socketNote) lines.push([r.socketNote, "", ""]);
+    if (r.socketNote?.includes("capped")) lines.push(["Receive buffer limited — see details.", "", ""]);
 
     out.replaceChildren();
     for (const [label, value, detail] of lines) {
@@ -180,13 +175,22 @@ document.getElementById("check").addEventListener("click", async (ev) => {
       line.append(label, bold, detail);
       out.append(line);
     }
-    status.textContent = r.publicHost ? "Address checked." : "No public IP found.";
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Connection details";
+    const help = document.createElement("p");
+    help.textContent = [r.note, "Allow both ports in your firewall; forward them if using a router.", r.socketNote]
+      .filter(Boolean).join(" ");
+    details.append(summary, help);
+    out.append(details);
+    status.textContent = r.publicHost ? "Ports not verified. Test on mobile data." : "No public IP found. Try a local IP.";
 
     // Refresh the links without reloading away the check result.
     if (r.publicHost) {
       const host = r.publicHost.includes(":") ? `[${r.publicHost}]` : r.publicHost;
       for (const box of document.querySelectorAll(".secret[data-secret]")) {
         const link = new URL(box.dataset.secret);
+        if (link.protocol === "https:" || link.protocol === "whips:") continue;
         link.host = `${host}:${r.signalPort}`;
         box.dataset.secret = link.href;
         if (!box.classList.contains("masked")) box.textContent = link.href;
@@ -202,6 +206,25 @@ document.getElementById("check").addEventListener("click", async (ev) => {
 // Autostart state comes from the platform, not from the config file, so the tick
 // cannot claim an entry that was removed outside this app.
 const autostartBox = document.getElementById("autostart");
+
+for (const [scope, label] of [["lan", "LAN"], ["remote", "Remote"]]) {
+  const checkbox = document.getElementById(`control-${scope}`);
+  const note = document.getElementById(`control-${scope}-note`);
+  checkbox.addEventListener("change", async () => {
+    const on = checkbox.checked;
+    checkbox.disabled = true;
+    note.textContent = "Saving…";
+    try {
+      await post(`/api/control/${scope}`, { on });
+      note.textContent = `${label} access ${on ? "enabled" : "disabled"}.`;
+    } catch {
+      checkbox.checked = !on;
+      note.textContent = `Could not save ${label.toLowerCase()} access. Try again.`;
+    } finally {
+      checkbox.disabled = false;
+    }
+  });
+}
 const autostartNote = document.getElementById("autostart-note");
 
 function showAutostart(state) {

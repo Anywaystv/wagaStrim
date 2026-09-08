@@ -6,6 +6,7 @@ package ui
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
@@ -16,6 +17,44 @@ import (
 )
 
 const testPort = 7330
+
+func TestLANControlToggleRendersSavedState(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		cfg := &config.Config{UIPort: testPort, ControlToken: "configured", ControlLAN: &on}
+		cfg.ControlRemote = on
+		log := logging.NewDefaultLoggerFactory().NewLogger("test")
+		srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
+		require.NoError(t, err)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:7330/", nil)
+		res := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(res, req)
+		require.Equal(t, http.StatusOK, res.Code)
+		assert.Equal(t, 1, strings.Count(res.Body.String(), `id="control-lan"`))
+		assert.Equal(t, on, strings.Contains(res.Body.String(), `id="control-lan" checked`))
+		assert.Equal(t, 1, strings.Count(res.Body.String(), `id="control-remote"`))
+		assert.Equal(t, on, strings.Contains(res.Body.String(), `id="control-remote" checked`))
+	}
+}
+
+func TestLANControlToggleRejectsCrossSiteAndInvalidBody(t *testing.T) {
+	cfg := &config.Config{UIPort: testPort}
+	log := logging.NewDefaultLoggerFactory().NewLogger("test")
+	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
+	require.NoError(t, err)
+	for _, site := range []string{"same-origin", "cross-site"} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+			"http://127.0.0.1:7330/api/control/lan", strings.NewReader(`{}`))
+		req.Header.Set("Sec-Fetch-Site", site)
+		res := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(res, req)
+		if site == "same-origin" {
+			assert.Equal(t, http.StatusBadRequest, res.Code)
+		} else {
+			assert.Equal(t, http.StatusNotFound, res.Code)
+		}
+		assert.True(t, cfg.LANControlEnabled())
+	}
+}
 
 // get drives the served handler rather than a bare mux, because the guard being
 // tested lives between them and a refactor that dropped it must fail here.

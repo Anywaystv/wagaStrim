@@ -47,6 +47,22 @@ h2 { display: flex; align-items: center; margin: 0 0 .2rem; font-size: 1rem; let
 .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap }
 .row.between { justify-content: space-between }
 .field { margin-top: .9rem }
+.camera-card > .field { margin-top: 1.1rem }
+.camera-card .field > .muted, .camera-help p { margin: .35rem 0 0 }
+.camera-card .field > label:not(.codec), .camera-card .field-label, .camera-card .codecs legend {
+  color: var(--text); font-size: .84rem; font-weight: 600; margin-bottom: .4rem;
+}
+.camera-card .field > label.delay-label { display: flex; justify-content: space-between; gap: 1rem }
+.camera-card .delay-label output { font-variant-numeric: tabular-nums }
+.camera-link { display: grid; grid-template-columns: minmax(0, 1fr) auto auto }
+.camera-link .secret { min-width: 0 }
+.camera-help { margin-top: .4rem; color: var(--muted); font-size: .78rem }
+.camera-help summary { cursor: pointer }
+.camera-help summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.codec-options { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; align-items: start }
+.camera-card [data-group] { width: 100%; max-width: 22rem }
+.sync-group summary { color: var(--text); font-size: .84rem; font-weight: 600 }
+.sync-group[open] summary { margin-bottom: .4rem }
 /* A label, a span and a legend all introduce a field and have to read alike.
    .codec is excluded because it lays its own contents out on a grid, and
    display:block here beat it on specificity and flattened it into one line. */
@@ -111,8 +127,12 @@ input[type=text]:not(.label-edit) {
 input[type=range] { flex: 1; min-width: 10rem; accent-color: var(--accent) }
 input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
 .muted { color: var(--muted); font-size: .78rem }
-#reach > span { display: block; margin-top: .4rem; overflow-wrap: anywhere }
+#reach > span { display: block; margin-top: .15rem; overflow-wrap: anywhere }
 #reach strong { color: var(--text) }
+#reach details { margin-top: .4rem }
+#reach summary { cursor: pointer }
+#reach summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+#reach details p { margin: .35rem 0; max-width: 65ch; overflow-wrap: anywhere }
 .pill {
   padding: .08rem .4rem; border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--panel-sunken); color: var(--muted); font-size: .72rem;
