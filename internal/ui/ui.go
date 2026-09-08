@@ -10,6 +10,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MarcFryd/wagaStrim/docs"
 	"github.com/MarcFryd/wagaStrim/internal/autostart"
 	"github.com/MarcFryd/wagaStrim/internal/config"
 	"github.com/MarcFryd/wagaStrim/internal/ingest"
@@ -33,11 +35,12 @@ var assets embed.FS
 
 // Server renders and mutates the config over HTTP.
 type Server struct {
-	cfg      *config.Config
-	log      logging.LeveledLogger
-	tpl      *template.Template
-	http     *http.Server
-	counters *stats.Registry
+	cfg            *config.Config
+	log            logging.LeveledLogger
+	tpl            *template.Template
+	http           *http.Server
+	counters       *stats.Registry
+	controlAtStart bool
 
 	// Set by main. Deleting a camera has to disconnect whatever is using it, and
 	// a delay change has to reach the buffers already running.
@@ -47,13 +50,14 @@ type Server struct {
 
 // pageData is what the template sees.
 type pageData struct {
-	Ingests          []cameraView
-	SenderBase       string
-	ReceiverBase     string
-	SecureSignal     bool
-	LANControl       bool
-	RemoteControl    bool
-	ControlAvailable bool
+	Ingests           []cameraView
+	SenderBase        string
+	ReceiverBase      string
+	SecureSignal      bool
+	LANControl        bool
+	RemoteControl     bool
+	ControlAvailable  bool
+	ControlConfigured bool
 
 	// The slider cannot render a bound it does not know. A deployment that
 	// lowered the floor would otherwise show a control that refuses its own
@@ -116,6 +120,7 @@ func New(
 	}
 
 	srv := &Server{cfg: cfg, log: log, tpl: tpl, counters: counters, revoke: revoke, retarget: retarget}
+	srv.controlAtStart = cfg.Token() != ""
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", srv.handleHealth)
@@ -131,6 +136,13 @@ func New(
 	mux.HandleFunc("GET /api/autostart", srv.handleAutostart)
 	mux.HandleFunc("POST /api/autostart", srv.handleSetAutostart)
 	mux.HandleFunc("POST /api/control/{scope}", srv.handleControlAccess)
+	mux.HandleFunc("POST /api/control/token", srv.handleCreateToken)
+	mux.HandleFunc("GET /api-guide", func(wri http.ResponseWriter, _ *http.Request) {
+		wri.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if _, writeErr := wri.Write(docs.API); writeErr != nil {
+			srv.log.Warnf("write API guide: %v", writeErr)
+		}
+	})
 
 	// Profiling lives on the loopback listener and nowhere else. It exposes
 	// memory contents and can be made to burn a core, so it must never be
@@ -318,11 +330,12 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 		// The Browser Source path is the default, so the receiver link is the
 		// player page rather than the raw WHEP endpoint. A WHEP client can still
 		// reach /whep/<same key> directly.
-		ReceiverBase:     receiverBase,
-		SecureSignal:     strings.HasPrefix(receiverBase, "https://"),
-		LANControl:       s.cfg.LANControlEnabled(),
-		RemoteControl:    s.cfg.RemoteControlEnabled(),
-		ControlAvailable: s.cfg.ControlToken != "",
+		ReceiverBase:      receiverBase,
+		SecureSignal:      strings.HasPrefix(receiverBase, "https://"),
+		LANControl:        s.cfg.LANControlEnabled(),
+		RemoteControl:     s.cfg.RemoteControlEnabled(),
+		ControlAvailable:  s.controlAtStart,
+		ControlConfigured: s.cfg.Token() != "",
 	}
 
 	wri.Header().Set("content-type", "text/html; charset=utf-8")
@@ -330,6 +343,27 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 	if err := s.tpl.Execute(wri, data); err != nil {
 		s.log.Errorf("render: %v", err)
 	}
+}
+
+func (s *Server) handleCreateToken(wri http.ResponseWriter, _ *http.Request) {
+	wri.Header().Set("Cache-Control", "no-store")
+	token, err := s.cfg.CreateControlToken()
+	if errors.Is(err, config.ErrTokenExists) {
+		http.Error(wri, "a control token already exists; see config.json", http.StatusConflict)
+
+		return
+	}
+	if err != nil {
+		s.fail(wri, http.StatusInternalServerError, err)
+
+		return
+	}
+	wri.Header().Set("Content-Type", "application/json")
+	wri.WriteHeader(http.StatusCreated)
+	s.writeJSON(wri, struct {
+		Token           string `json:"token"`
+		RestartRequired bool   `json:"restartRequired"`
+	}{Token: token, RestartRequired: true})
 }
 
 func (s *Server) handleControlAccess(wri http.ResponseWriter, req *http.Request) {

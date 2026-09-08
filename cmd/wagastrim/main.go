@@ -108,13 +108,14 @@ func run(headless bool, log logging.LeveledLogger) error {
 
 	errs := make(chan error, 3)
 	listeners := 2
+	controlEnabled := cfg.Token() != ""
 
 	go func() { errs <- srv.Serve(ctx) }()
 	go func() { errs <- public.Serve(ctx) }()
 
 	// Only where a deployment configured a token. A desktop install has no
 	// second machine that owns its cameras, so it never opens this port.
-	if cfg.ControlToken != "" {
+	if controlEnabled {
 		listeners++
 		control := control.New(cfg, log, counters, revoke)
 

@@ -26,6 +26,11 @@ document.addEventListener("click", (ev) => {
   const btn = ev.target.closest("button");
   if (!btn) return;
 
+  if (btn.id === "create-token") {
+    createToken(btn);
+    return;
+  }
+
   if (btn.hasAttribute("data-reveal")) {
     const box = btn.parentElement.querySelector(".secret");
     const hidden = box.classList.toggle("masked");
@@ -188,7 +193,7 @@ document.getElementById("check").addEventListener("click", async (ev) => {
     // Refresh the links without reloading away the check result.
     if (r.publicHost) {
       const host = r.publicHost.includes(":") ? `[${r.publicHost}]` : r.publicHost;
-      for (const box of document.querySelectorAll(".secret[data-secret]")) {
+      for (const box of document.querySelectorAll(".camera-card .secret[data-secret]")) {
         const link = new URL(box.dataset.secret);
         if (link.protocol === "https:" || link.protocol === "whips:") continue;
         link.host = `${host}:${r.signalPort}`;
@@ -202,6 +207,31 @@ document.getElementById("check").addEventListener("click", async (ev) => {
     ev.target.textContent = "Retry";
   }
 });
+
+async function createToken(btn) {
+  const note = document.getElementById("token-note");
+  btn.disabled = true;
+  note.textContent = "Generating token…";
+  try {
+    const res = await fetch("/api/control/token", { method: "POST" });
+    if (!res.ok) {
+      note.textContent = res.status === 409
+        ? "A token already exists. Find controlToken in config.json."
+        : "Could not save the token. Check the server log and try again.";
+      btn.disabled = res.status === 409;
+      return;
+    }
+    const result = await res.json();
+    const box = document.getElementById("new-token");
+    box.querySelector(".secret").dataset.secret = result.token;
+    box.hidden = false;
+    btn.remove();
+    note.textContent = "Token saved. Copy it to your password manager, then restart WagaStrim to enable the API.";
+  } catch {
+    note.textContent = "Could not read the result. Check controlToken in config.json before trying again.";
+    btn.disabled = false;
+  }
+}
 
 // Autostart state comes from the platform, not from the config file, so the tick
 // cannot claim an entry that was removed outside this app.

@@ -53,8 +53,9 @@ object, keeping your other settings and `ingests`. Save and restart to apply edi
 
 ### Control access (optional)
 
-Generate a random password of at least 32 characters with a password manager.
-Replace the placeholder with that secret:
+In **Reachability**, click **Generate control token**, save it in a password
+manager, then restart. Or set a password-manager-generated secret of at least
+32 characters in the existing config:
 
 ```json
 {
@@ -72,6 +73,10 @@ The **Local access** and **Remote access** dashboard toggles apply immediately.
 Both off means this machine only. They do not change streaming/preview access or
 open firewall/router ports. Set `controlBind` to a LAN or VPN IP to restrict the
 listener. The settings webpage remains local on TCP 7330.
+
+Open **API setup guide** in Reachability for token creation, camera key generation,
+WHIP/WHEP/preview links and request examples. The guide is included offline at
+`http://127.0.0.1:7330/api-guide` ([source](docs/API.html)).
 
 ### HTTPS (optional)
 

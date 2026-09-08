@@ -1,0 +1,135 @@
+<!-- SPDX-FileCopyrightText: 2026 wagaStrim contributors
+     SPDX-License-Identifier: MIT -->
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WagaStrim API setup</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: var(--panel-sunken) }
+  code { overflow-wrap: anywhere }
+  a { color: var(--accent-text) }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+  h2 { margin-top: 1.5rem }
+  dt { margin-top: 1rem; font-weight: 600 }
+  dd { margin: .25rem 0 0 }
+</style>
+<main>
+<a href="/">Back to setup</a>
+<h1>API setup</h1>
+<p>Create cameras from another app and get their publishing and preview links.
+All examples use the default ports. Replace addresses and placeholders with your own.</p>
+
+<h2>1. Create the control token</h2>
+<p>On the server or computer running WagaStrim, open <a href="/">Setup</a>.
+Under <strong>Reachability</strong>, click <strong>Generate control token</strong>,
+copy it to a password manager, then restart WagaStrim. This creates a random
+256-bit secret and saves it as <code>controlToken</code> in <code>config.json</code>.
+The file path appears in the startup log. An existing token is never overwritten.</p>
+<p>For a headless installation, run this on that machine, then restart WagaStrim:</p>
+<pre><code>curl -X POST http://127.0.0.1:7330/api/control/token</code></pre>
+<p>Windows PowerShell: use <code>curl.exe</code> in these examples.
+The response is <code>{"token":"YOUR_SECRET","restartRequired":true}</code> (201).
+A second request returns 409. This setup endpoint is local only; it is not on the public control API.</p>
+<p>The token grants administration of <em>all</em> cameras. It is separate from
+camera keys: never put it into Moblin, OBS or a public webpage. Existing tokens
+can be read from <code>config.json</code>. To rotate one, stop WagaStrim, replace
+<code>controlToken</code> with a password-manager-generated secret of at least 32
+characters, then restart and update your clients. Remove the field to disable the API.</p>
+
+<h2>2. Set the addresses</h2>
+<p>Stop WagaStrim before editing <code>config.json</code>. Merge these fields into
+the existing object; preserve the other settings and <code>ingests</code>:</p>
+<pre><code>{
+  "publicHost": "192.168.1.50",
+  "controlLan": true,
+  "controlRemote": false
+}</code></pre>
+<p>Use your server's Wi-Fi/VPN IP or public hostname for <code>publicHost</code>.
+Restart after editing. Returned media links use this host, or <code>127.0.0.1</code>
+if unset (only usable on the server itself). HTTPS links use <code>publicUrl</code>
+when configured. The API never guesses a public address from the request.</p>
+<p>Control requests go to TCP <strong>7333</strong> and require
+<code>Authorization: Bearer YOUR_SECRET</code>. Setup remains local on TCP 7330.
+The Local/Remote access toggles control allowed API clients, not camera access.
+They do not open firewall or router ports. For a remote server's setup page,
+use an SSH tunnel to its loopback port 7330.</p>
+<p>HTTP exposes keys and tokens. Use HTTPS or an encrypted VPN outside a trusted
+local connection. For built-in HTTPS, set <code>tlsCert</code> and <code>tlsKey</code>
+to trusted certificate files and set <code>publicHost</code> to the certificate's
+hostname, then restart. Both signaling and control use HTTPS on their existing ports.
+A signaling <code>publicUrl</code> alone does not secure TCP 7333; secure the control
+listener separately if using a reverse proxy. Restrict proxy access too: access
+toggles inspect the direct peer, not forwarded headers.</p>
+
+<h2>3. Generate camera keys and links</h2>
+<p>Send a name (1–48 characters). Keep your token out of shared shell history and logs.</p>
+<pre><code>curl http://127.0.0.1:7333/control/ingests -H "Authorization: Bearer YOUR_SECRET" -H "Content-Type: application/json" -d '{"label":"Phone"}'</code></pre>
+<p>Windows PowerShell can pass the JSON without shell-quoting differences:</p>
+<pre><code>$credential = Read-Host "Control token"
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:7333/control/ingests -Headers @{Authorization="Bearer $credential"} -ContentType application/json -Body '{"label":"Phone"}'</code></pre>
+<p>A 201 response contains the camera's settings and links. Keys below are abbreviated:</p>
+<pre><code>{
+  "id": "...",
+  "label": "Phone",
+  "senderKey": "s_...",
+  "receiverKey": "r_...",
+  "codecs": ["h264"],
+  "delayMs": 2000,
+  "links": {
+    "moblin": "whip://192.168.1.50:7331/whip/s_...",
+    "whip": "http://192.168.1.50:7331/whip/s_...",
+    "whep": "http://192.168.1.50:7331/whep/r_...",
+    "player": "http://192.168.1.50:7331/player/r_..."
+  }
+}</code></pre>
+<dl>
+<dt>links.moblin</dt><dd>Paste into Moblin. HTTPS uses <code>whips://</code>.</dd>
+<dt>links.whip</dt><dd>Publishing URL for other WHIP clients. The sender key is already in the URL.</dd>
+<dt>links.player</dt><dd>Preview in a browser or an OBS Browser Source. Use H.264 and Opus for the simplest setup.
+Enable <strong>Control audio via OBS</strong>; disable <strong>Shutdown source when not visible</strong>.</dd>
+<dt>links.whep</dt><dd>Raw WHEP endpoint for compatible receivers; not a browser page.</dd>
+</dl>
+<p>Sender keys allow publishing; receiver keys allow viewing. Treat both as secrets.
+New cameras default to H.264 and 2000 ms delay; edit them in Setup.
+Audio follows the sender, but AAC needs a compatible receiver and will not play
+in the built-in browser preview. WagaStrim does not transcode or push to Twitch/Kick;
+receive the feed in OBS and stream from OBS to your provider.</p>
+<p>Allow TCP 7331 for signaling and UDP 7332 for media. Cellular connections need
+reachable public addresses and any necessary router forwarding. An API success
+does not prove media reachability.</p>
+
+<h2>4. Retrieve cameras and status</h2>
+<pre><code>curl http://127.0.0.1:7333/control/ingests -H "Authorization: Bearer YOUR_SECRET"
+curl http://127.0.0.1:7333/control/stats -H "Authorization: Bearer YOUR_SECRET"</code></pre>
+<p>The first returns <code>{"ingests":[...]}</code>, including keys and links for every
+camera (empty array when none exist). Stats returns an object keyed by camera ID,
+without secrets. Check <code>live</code> to see whether a publisher is active.
+Repeated create requests make different cameras; after a lost response, list cameras
+before retrying. Names are not unique identifiers.</p>
+
+<h2>Deployment-owned camera lists</h2>
+<p><code>PUT /control/ingests</code> accepts <code>{"ingests":[...]}</code> and replaces
+the <strong>entire</strong> list. This is for a dashboard that owns its camera database.
+Keep every camera you want to retain. An empty list deletes all cameras.</p>
+<p>Each camera has <code>id</code> (nonempty and unique), <code>label</code>,
+<code>senderKey</code> (<code>s_</code> + 32 lowercase hex characters),
+<code>receiverKey</code> (<code>r_</code> + 32 lowercase hex characters),
+<code>codecs</code> (h264, h265, av1), <code>delayMs</code> (0–10000) and optional
+<code>syncGroup</code>. Keys must be unique and cryptographically random.
+Strip the read-only <code>links</code> field from GET results before PUT.
+Missing cameras and changed keys/codecs disconnect existing sessions; 204 means saved.
+There is no merge or conflict detection: use one list owner. For manual deletion,
+use Remove in Setup.</p>
+
+<h2>Errors</h2>
+<p><strong>400:</strong> invalid JSON, unknown fields or invalid camera settings.
+<strong>404:</strong> missing/wrong token, blocked client address or unknown route.
+<strong>409:</strong> local token already exists.
+<strong>429/503:</strong> request limits; back off before retrying.
+<strong>500:</strong> camera/token could not be saved; check the server log.
+Connection refused usually means WagaStrim needs a restart after token creation,
+the API is disabled, or the listener/firewall address is wrong.</p>
+</main>
+</html>

@@ -28,6 +28,20 @@
     <p class="muted" id="reach-status">Not checked yet.</p>
     <div class="muted" id="reach" role="status" aria-live="polite"></div>
     <p class="muted">Control API access requires a token. Camera streaming and preview links are unaffected.</p>
+    <p><a class="button" href="/api-guide">API setup guide — tokens, keys and links</a></p>
+    {{if not .ControlConfigured}}
+    <button class="button" id="create-token">Generate control token</button>
+    <div id="new-token" hidden>
+      <span class="field-label" id="token-label">Control token · keep private</span>
+      <div class="row camera-link">
+        <div class="secret masked" role="group" aria-labelledby="token-label"
+             data-destination="control API">••••••••••••••••</div>
+        <button class="button" data-reveal aria-label="Show control token">Show</button>
+        <button class="button" data-copy aria-label="Copy control token">Copy</button>
+      </div>
+    </div>
+    {{end}}
+    <p class="muted" id="token-note" role="status" aria-live="polite">{{if and .ControlConfigured (not .ControlAvailable)}}Token saved. Restart WagaStrim to enable the control API.{{end}}</p>
     <label class="row">
       <input type="checkbox" id="control-lan" {{if .LANControl}}checked{{end}} {{if not .ControlAvailable}}disabled{{end}}>
       <span>Local access — Wi-Fi and VPN computers</span>

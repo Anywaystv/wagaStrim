@@ -16,7 +16,52 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testPort = 7330
+const (
+	testPort   = 7330
+	sameOrigin = "same-origin"
+)
+
+func TestTokenBootstrapGuardsAndGuide(t *testing.T) {
+	cfg := &config.Config{UIPort: testPort, ControlToken: "keep-existing-secret"}
+	log := logging.NewDefaultLoggerFactory().NewLogger("test")
+	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
+	require.NoError(t, err)
+	for _, site := range []string{sameOrigin, "cross-site", "same-site"} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+			"http://127.0.0.1:7330/api/control/token", nil)
+		req.Header.Set("Sec-Fetch-Site", site)
+		res := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(res, req)
+		want := http.StatusNotFound
+		if site == sameOrigin {
+			want = http.StatusConflict
+			assert.Equal(t, "no-store", res.Header().Get("Cache-Control"))
+		}
+		assert.Equal(t, want, res.Code)
+		assert.NotContains(t, res.Body.String(), cfg.Token())
+	}
+	for _, path := range []string{"/", "/api-guide"} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:7330"+path, nil)
+		res := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(res, req)
+		require.Equal(t, http.StatusOK, res.Code)
+		assert.NotContains(t, res.Body.String(), cfg.Token())
+		assert.Contains(t, res.Body.String(), "API setup")
+	}
+}
+
+func TestTokenBootstrapDoesNotClaimSuccessOnSaveFailure(t *testing.T) {
+	cfg := &config.Config{UIPort: testPort}
+	log := logging.NewDefaultLoggerFactory().NewLogger("test")
+	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
+	require.NoError(t, err)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		"http://127.0.0.1:7330/api/control/token", nil)
+	res := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(res, req)
+	assert.Equal(t, http.StatusInternalServerError, res.Code)
+	assert.Empty(t, cfg.Token())
+}
 
 func TestLANControlToggleRendersSavedState(t *testing.T) {
 	for _, on := range []bool{true, false} {
@@ -41,13 +86,13 @@ func TestLANControlToggleRejectsCrossSiteAndInvalidBody(t *testing.T) {
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
 	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
 	require.NoError(t, err)
-	for _, site := range []string{"same-origin", "cross-site"} {
+	for _, site := range []string{sameOrigin, "cross-site"} {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
 			"http://127.0.0.1:7330/api/control/lan", strings.NewReader(`{}`))
 		req.Header.Set("Sec-Fetch-Site", site)
 		res := httptest.NewRecorder()
 		srv.http.Handler.ServeHTTP(res, req)
-		if site == "same-origin" {
+		if site == sameOrigin {
 			assert.Equal(t, http.StatusBadRequest, res.Code)
 		} else {
 			assert.Equal(t, http.StatusNotFound, res.Code)
@@ -96,7 +141,7 @@ func TestACrossSiteRequestIsRefused(t *testing.T) {
 
 func TestThePageItselfIsServed(t *testing.T) {
 	for _, host := range []string{"127.0.0.1:7330", "localhost:7330", "[::1]:7330"} {
-		assert.Equal(t, http.StatusOK, get(t, host, "same-origin"), host)
+		assert.Equal(t, http.StatusOK, get(t, host, sameOrigin), host)
 	}
 
 	// A typed URL, and anything that is not a browser at all.
