@@ -90,14 +90,14 @@
       <summary>Camera settings<span class="sr-only"> for {{.Label}}</span></summary>
     <div class="field">
       <span class="field-label" id="send-{{.ID}}">Camera input · Moblin</span>
-      <div class="row camera-link">
+      <div class="row camera-link camera-input-link">
         <div class="secret masked" role="group" aria-labelledby="send-{{.ID}}"
              data-destination="Moblin" data-secret="{{$.SenderBase}}{{.SenderKey}}">••••••••••••••••</div>
+        <button class="button quiet" data-reset-key="{{.ID}}">Reset stream key</button>
         <button class="button" data-reveal aria-label="Show the sender link for {{.Label}}">Show</button>
         <button class="button" data-copy aria-label="Copy the sender link for {{.Label}}">Copy</button>
       </div>
       <p class="muted">Paste this link into Moblin. Other WHIP apps use {{if $.SecureSignal}}https{{else}}http{{end}} instead of {{if $.SecureSignal}}whips{{else}}whip{{end}}.</p>
-      <button class="button quiet" data-reset-key="{{.ID}}">Reset stream key</button>
       <p class="muted" data-reset-note role="status" aria-live="polite">Disconnects this stream. Update the sender with the new link; the preview link stays unchanged.</p>
     </div>
 
