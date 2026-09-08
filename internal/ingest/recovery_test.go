@@ -33,6 +33,9 @@ func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, receiver.Close()) })
 	phone, _ := publisher(t)
+	// Read credentials before SetRemoteDescription starts ICE asynchronously.
+	local, err := receiver.SCTP().Transport().ICETransport().GetLocalParameters()
+	require.NoError(t, err)
 	require.NoError(t, receiver.SetRemoteDescription(webrtc.SessionDescription{
 		Type: webrtc.SDPTypeOffer, SDP: offerFrom(t, phone),
 	}))
@@ -41,8 +44,6 @@ func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
 	gathered := webrtc.GatheringCompletePromise(receiver)
 	require.NoError(t, receiver.SetLocalDescription(answer))
 	<-gathered
-	local, err := receiver.SCTP().Transport().ICETransport().GetLocalParameters()
-	require.NoError(t, err)
 	remote, err := phone.SCTP().Transport().ICETransport().GetLocalParameters()
 	require.NoError(t, err)
 	username := local.UsernameFragment + ":" + remote.UsernameFragment
