@@ -78,6 +78,15 @@ func TestSaveIsOwnerOnly(t *testing.T) {
 	assert.Equal(t, "-rw-------", info.Mode().String(), "keys live in this file")
 }
 
+func TestSaveDoesNotReusePredictableTemporaryFile(t *testing.T) {
+	cfg := &Config{path: t.TempDir() + "/config.json"}
+	require.NoError(t, os.WriteFile(cfg.path+".tmp", []byte("untouched"), 0o600))
+	require.NoError(t, cfg.Save())
+	stale, err := os.ReadFile(cfg.path + ".tmp")
+	require.NoError(t, err)
+	assert.Equal(t, "untouched", string(stale))
+}
+
 // The mime type comes from pion and the identifier is ours, so the mapping is
 // the one place a codec rename would silently stop reporting.
 func TestANegotiatedMimeTypeRendersAsALabel(t *testing.T) {

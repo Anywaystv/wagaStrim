@@ -9,6 +9,7 @@ import (
 	"embed"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/MarcFryd/wagaStrim/internal/config"
 	peerpkg "github.com/MarcFryd/wagaStrim/internal/peer"
@@ -49,7 +50,13 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
+	pending  map[string]int
 }
+
+const (
+	maxSubscribers          = 64
+	maxSubscribersPerIngest = 8
+)
 
 // NewServer shares the caller's WebRTC stack rather than building a second one.
 func NewServer(cfg *config.Config, log logging.LeveledLogger, api *webrtc.API, hub *relay.Relay) *Server {
@@ -59,6 +66,7 @@ func NewServer(cfg *config.Config, log logging.LeveledLogger, api *webrtc.API, h
 		api:      api,
 		relay:    hub,
 		sessions: map[string]*Session{},
+		pending:  map[string]int{},
 	}
 }
 
@@ -97,6 +105,10 @@ func (s *Server) negotiate(
 	desc webrtc.SessionDescription,
 	tracks []*webrtc.TrackLocalStaticRTP,
 ) (string, string, error) {
+	if !s.reserve(ing.ID) {
+		return "", "", ErrCapacity
+	}
+	defer s.releaseReservation(ing.ID)
 	peer, err := s.api.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", ErrBadOffer, err)
@@ -136,8 +148,43 @@ func (s *Server) negotiate(
 	s.mu.Lock()
 	s.sessions[resource] = session
 	s.mu.Unlock()
+	// A receiver which never completes ICE must not retain a slot indefinitely.
+	time.AfterFunc(20*time.Second, func() {
+		if peer.ConnectionState() != webrtc.PeerConnectionStateConnected {
+			_ = s.Teardown(resource)
+		}
+	})
 
 	return answer, resource, nil
+}
+
+func (s *Server) releaseReservation(ingestID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pending[ingestID]--
+	if s.pending[ingestID] == 0 {
+		delete(s.pending, ingestID)
+	}
+}
+
+func (s *Server) reserve(ingestID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	total, camera := len(s.sessions), s.pending[ingestID]
+	for _, count := range s.pending {
+		total += count
+	}
+	for _, session := range s.sessions {
+		if session.IngestID == ingestID {
+			camera++
+		}
+	}
+	if total >= maxSubscribers || camera >= maxSubscribersPerIngest {
+		return false
+	}
+	s.pending[ingestID]++
+
+	return true
 }
 
 // drainRTCP consumes a subscriber's RTCP and passes its keyframe requests back

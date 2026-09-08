@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -26,23 +27,25 @@ const maxOfferBytes = 256 << 10
 
 // Server routes WHIP over HTTP to the ingest package.
 type Server struct {
-	cfg    *config.Config
-	log    logging.LeveledLogger
-	whip   *ingest.Server
-	whep   *egress.Server
-	http   *http.Server
-	listen string
+	cfg          *config.Config
+	log          logging.LeveledLogger
+	whip         *ingest.Server
+	whep         *egress.Server
+	http         *http.Server
+	listen       string
+	negotiations chan struct{}
 }
 
 // New wires the routes. The listener binds every interface, because a phone on
 // cellular has to reach it.
 func New(cfg *config.Config, log logging.LeveledLogger, whip *ingest.Server, whep *egress.Server) *Server {
 	srv := &Server{
-		cfg:    cfg,
-		log:    log,
-		whip:   whip,
-		whep:   whep,
-		listen: fmt.Sprintf(":%d", cfg.SignalPort),
+		cfg:          cfg,
+		log:          log,
+		whip:         whip,
+		whep:         whep,
+		listen:       net.JoinHostPort(cfg.SignalBind, fmt.Sprint(cfg.SignalPort)),
+		negotiations: make(chan struct{}, 8),
 	}
 
 	mux := http.NewServeMux()
@@ -60,7 +63,7 @@ func New(cfg *config.Config, log logging.LeveledLogger, whip *ingest.Server, whe
 	mux.HandleFunc("GET /player/{key}", srv.handlePlayer)
 
 	srv.http = &http.Server{
-		Handler:           mux,
+		Handler:           listen.Guard(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -69,7 +72,7 @@ func New(cfg *config.Config, log logging.LeveledLogger, whip *ingest.Server, whe
 
 // Serve blocks until the context is canceled.
 func (s *Server) Serve(ctx context.Context) error {
-	return listen.Serve(ctx, s.log, s.http, s.listen, "signaling")
+	return listen.Serve(ctx, s.log, s.http, s.listen, "signaling", s.cfg.TLSCert, s.cfg.TLSKey)
 }
 
 // negotiate reads an offer, hands it to whichever endpoint owns it, and writes
@@ -81,14 +84,27 @@ func (s *Server) negotiate(
 	run func(key, offer string) (string, string, error),
 	refuse func(http.ResponseWriter, string, error),
 ) {
+	key := keyFrom(req)
+	if _, role := s.cfg.Resolve(key); role == config.RoleNone {
+		http.Error(wri, "not found", http.StatusNotFound)
+
+		return
+	}
+	select {
+	case s.negotiations <- struct{}{}:
+		defer func() { <-s.negotiations }()
+	default:
+		wri.Header().Set("Retry-After", "2")
+		http.Error(wri, "too many negotiations", http.StatusTooManyRequests)
+
+		return
+	}
 	offer, err := io.ReadAll(http.MaxBytesReader(wri, req.Body, maxOfferBytes))
 	if err != nil {
 		http.Error(wri, "offer too large", http.StatusRequestEntityTooLarge)
 
 		return
 	}
-
-	key := keyFrom(req)
 
 	answer, resource, err := run(key, string(offer))
 	if err != nil {
@@ -197,6 +213,8 @@ func (s *Server) rejectSubscribe(wri http.ResponseWriter, _ string, cause error)
 	s.log.Warnf("subscribe rejected: %v", cause)
 
 	switch {
+	case errors.Is(cause, egress.ErrCapacity):
+		http.Error(wri, "subscriber limit reached", http.StatusTooManyRequests)
 	case errors.Is(cause, egress.ErrWrongRole):
 		http.Error(wri,
 			"This is the sender link, which belongs in Moblin. OBS needs the receiver link.",

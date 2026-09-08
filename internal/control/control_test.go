@@ -16,7 +16,85 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const token = "a-provisioned-token"
+const (
+	token        = "a-provisioned-token"
+	loopbackPeer = "127.0.0.1:1234"
+	lanPeer      = "192.168.68.10:1234"
+)
+
+func TestLANControlToggleAppliesWithoutRestart(t *testing.T) {
+	srv, cfg, _ := testServer(t)
+	for _, on := range []bool{true, false, true} {
+		require.NoError(t, cfg.SetLANControl(on))
+		for _, address := range []string{lanPeer, loopbackPeer} {
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/control/stats", nil)
+			req.RemoteAddr = address
+			req.Header.Set("Authorization", "Bearer "+token)
+			res := httptest.NewRecorder()
+			srv.http.Handler.ServeHTTP(res, req)
+			if on || address == loopbackPeer {
+				assert.Equal(t, http.StatusOK, res.Code)
+			} else {
+				assert.Equal(t, http.StatusNotFound, res.Code)
+			}
+		}
+	}
+}
+
+func TestRemoteToggleRequiresTokenAndDoesNotEnableLAN(t *testing.T) {
+	srv, cfg, _ := testServer(t)
+	require.NoError(t, cfg.SetLANControl(false))
+	require.False(t, cfg.RemoteControlEnabled())
+	for _, on := range []bool{false, true, false} {
+		require.NoError(t, cfg.SetControlAccess("remote", on))
+		for _, peer := range []string{"203.0.113.20:1234", "[2001:db8::2]:1234", lanPeer} {
+			for _, credential := range []string{token, "wrong"} {
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/control/stats", nil)
+				req.RemoteAddr = peer
+				req.Header.Set("Authorization", "Bearer "+credential)
+				res := httptest.NewRecorder()
+				srv.http.Handler.ServeHTTP(res, req)
+				want := http.StatusNotFound
+				if on && credential == token && peer != lanPeer {
+					want = http.StatusOK
+				}
+				assert.Equal(t, want, res.Code)
+			}
+		}
+	}
+}
+
+func TestControlAllowsPrivatePeersAndRejectsPublicPeers(t *testing.T) {
+	for _, peer := range []struct {
+		address string
+		allowed bool
+	}{
+		{loopbackPeer, true},
+		{"192.168.68.20:1234", true},
+		{"10.10.0.2:1234", true},
+		{"[::1]:1234", true},
+		{"[fd00::2]:1234", true},
+		{"[::ffff:192.168.68.20]:1234", true},
+		{"203.0.113.20:1234", false},
+		{"[2001:db8::2]:1234", false},
+		{"invalid", false},
+	} {
+		t.Run(peer.address, func(t *testing.T) {
+			srv, _, _ := testServer(t)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/control/stats", nil)
+			req.RemoteAddr = peer.address
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("X-Forwarded-For", "192.168.68.10")
+			res := httptest.NewRecorder()
+			srv.http.Handler.ServeHTTP(res, req)
+			if peer.allowed {
+				assert.Equal(t, http.StatusOK, res.Code)
+			} else {
+				assert.NotEqual(t, http.StatusOK, res.Code)
+			}
+		})
+	}
+}
 
 func testServer(t *testing.T) (*Server, *config.Config, *[]string) {
 	t.Helper()
@@ -46,6 +124,7 @@ func put(t *testing.T, srv *Server, bearer, body string) *httptest.ResponseRecor
 	t.Helper()
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/control/ingests", strings.NewReader(body))
+	req.RemoteAddr = "192.168.68.10:12345"
 	if bearer != "" {
 		req.Header.Set("authorization", "Bearer "+bearer)
 	}
@@ -108,6 +187,7 @@ func TestStatsNeedTheTokenToo(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, put(t, srv, token, list("a")).Code)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/control/stats", nil)
+	req.RemoteAddr = "192.168.68.10:12345"
 	res := httptest.NewRecorder()
 	srv.http.Handler.ServeHTTP(res, req)
 	assert.Equal(t, http.StatusNotFound, res.Code)

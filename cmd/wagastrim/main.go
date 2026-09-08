@@ -50,6 +50,12 @@ func run(headless bool, log logging.LeveledLogger) error {
 	}
 
 	log.Infof("config %s", cfg.Path())
+	if transportErr := cfg.ValidateTransport(); transportErr != nil {
+		return transportErr
+	}
+	if cfg.TLSCert == "" {
+		log.Warnf("HTTP sends stream keys without encryption; use HTTPS or an encrypted VPN for internet access")
+	}
 
 	counters := stats.New()
 	hub := relay.New()

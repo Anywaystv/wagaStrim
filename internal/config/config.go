@@ -91,6 +91,15 @@ type Ingest struct {
 type Config struct {
 	Version    int    `json:"version"`
 	PublicHost string `json:"publicHost"`
+	// Bind addresses can restrict signaling and control to a LAN or VPN interface.
+	SignalBind    string `json:"signalBind,omitempty"`
+	ControlBind   string `json:"controlBind,omitempty"`
+	ControlLAN    *bool  `json:"controlLan,omitempty"`
+	ControlRemote bool   `json:"controlRemote,omitempty"`
+	TLSCert       string `json:"tlsCert,omitempty"`
+	TLSKey        string `json:"tlsKey,omitempty"`
+	// PublicURL is the HTTPS origin of a local reverse proxy.
+	PublicURL string `json:"publicUrl,omitempty"`
 	// ICEPublicIPs are addresses reached through a 1:1 UDP port forward.
 	// Legacy public/local entries are accepted, but only the public half is
 	// advertised. Local candidates remain available for nearby subscribers.
@@ -278,11 +287,22 @@ func (c *Config) saveLocked() error {
 		return fmt.Errorf("%w: %w", ErrWriteConfig, err)
 	}
 
-	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(c.path), ".config-*.tmp")
+	if err != nil {
 		return fmt.Errorf("%w: %w", ErrWriteConfig, err)
 	}
-
+	tmp := file.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if _, err = file.Write(append(raw, '\n')); err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrWriteConfig, err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("%w: %w", ErrWriteConfig, closeErr)
+	}
 	if err := os.Rename(tmp, c.path); err != nil {
 		return fmt.Errorf("%w: %w", ErrWriteConfig, err)
 	}
