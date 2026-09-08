@@ -16,14 +16,9 @@ import (
 	"sync"
 )
 
-// Delay bounds in milliseconds. The floor is not a default, it is a floor: two
-// seconds of buffered media is what keeps OBS fed through a tunnel or a tower
-// handoff. A value below it is clamped rather than honored, and the file is
-// never trusted to stay inside the range. A deployment whose camera cannot drop
-// a packet may lower the floor itself, down to and including zero, which is why
-// FloorMS is a pointer and absent is not the same setting as nothing.
+// Delay bounds are independent of the initial buffer for a new camera.
 const (
-	DelayFloorMS   = 2000
+	DelayFloorMS   = 0
 	DelayDefaultMS = 2000
 	DelayMaxMS     = 10000
 )
@@ -110,11 +105,7 @@ type Config struct {
 	ControlToken string `json:"controlToken,omitempty"`
 	ControlPort  int    `json:"controlPort,omitempty"`
 
-	// FloorMS lowers the playout floor for a deployment whose cameras are not on
-	// cellular. Absent means DelayFloorMS, which is what a person installing this
-	// on their own machine always gets. It is a pointer because zero is a floor a
-	// deployment may legitimately ask for, so absent and zero cannot be the same
-	// value.
+	// FloorMS lets deployments impose a higher minimum. Unset allows zero delay.
 	FloorMS *int     `json:"delayFloorMs,omitempty"`
 	Ingests []Ingest `json:"ingests"`
 
@@ -239,9 +230,7 @@ func (c *Config) normalise() {
 	}
 }
 
-// clampFloor holds the configured floor inside the range a deployment may pick.
-// Absent means the file said nothing, which is the two second product floor. A
-// stated zero is honored, which is the whole reason this takes a pointer.
+// clampFloor retains explicit deployment limits within the supported range.
 func clampFloor(floorMS *int) int {
 	switch {
 	case floorMS == nil:
@@ -255,9 +244,7 @@ func clampFloor(floorMS *int) int {
 	}
 }
 
-// clampDelay holds a playout target inside the permitted range. The floor is the
-// product, not a preference, so it is applied on every path that can set a delay
-// rather than trusting a caller to have applied it already.
+// clampDelay applies the same bounds to loaded settings and API updates.
 func (c *Config) clampDelay(delayMS int) int {
 	floor := clampFloor(c.FloorMS)
 
