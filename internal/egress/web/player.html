@@ -117,8 +117,11 @@
     // OBS sets autoplay-policy=no-user-gesture-required, so unmuted playback
     // starts on its own there. An ordinary browser will refuse; say so rather
     // than showing a black rectangle.
-    video.play().catch(() => say("Click to start audio"));
-    document.body.onclick = () => video.play().catch(() => {});
+    const play = () => video.play().then(() => {
+      if (msg.textContent === "Click to start audio") msg.hidden = true;
+    }).catch(() => say("Click to start audio"));
+    play();
+    document.body.onclick = play;
   }
 
   addEventListener("pagehide", release);
