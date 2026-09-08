@@ -339,7 +339,13 @@ func (c *Config) AddIngest(label string) (Ingest, error) {
 		DelayMS:     c.clampDelay(DelayDefaultMS),
 	})
 
-	return c.Ingests[len(c.Ingests)-1], c.saveLocked()
+	if err := c.saveLocked(); err != nil {
+		c.Ingests = c.Ingests[:len(c.Ingests)-1]
+
+		return Ingest{}, err
+	}
+
+	return c.Ingests[len(c.Ingests)-1], nil
 }
 
 // ReplaceIngests sets the whole list from a deployment that owns it elsewhere.
@@ -370,9 +376,15 @@ func (c *Config) ReplaceIngests(next []Ingest) ([]string, error) {
 		replacement[idx] = ing
 	}
 
+	previous := c.Ingests
 	c.Ingests = replacement
+	if err := c.saveLocked(); err != nil {
+		c.Ingests = previous
 
-	return stale, c.saveLocked()
+		return nil, err
+	}
+
+	return stale, nil
 }
 
 // validateIngests rejects a list that could not be resolved unambiguously.

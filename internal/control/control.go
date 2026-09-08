@@ -13,6 +13,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -60,6 +61,8 @@ func New(
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /control/ingests", srv.authed(srv.handleIngests))
+	mux.HandleFunc("POST /control/ingests", srv.authed(srv.handleCreate))
+	mux.HandleFunc("GET /control/ingests", srv.authed(srv.handleList))
 	mux.HandleFunc("GET /control/stats", srv.authed(srv.handleStats))
 
 	srv.http = &http.Server{
@@ -86,8 +89,9 @@ func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 
 			return
 		}
-		offered := strings.TrimPrefix(req.Header.Get("authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(offered), []byte(s.cfg.ControlToken)) != 1 {
+		offered, bearer := strings.CutPrefix(req.Header.Get("authorization"), "Bearer ")
+		token := s.cfg.Token()
+		if !bearer || token == "" || subtle.ConstantTimeCompare([]byte(offered), []byte(token)) != 1 {
 			s.log.Warnf("control request without a valid token: %s", req.URL.Path)
 			http.Error(wri, "not found", http.StatusNotFound)
 
@@ -161,6 +165,9 @@ func decode(req *http.Request, into any) error {
 
 	if err := dec.Decode(into); err != nil {
 		return fmt.Errorf("%w: %w", ErrBadRequest, err)
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return ErrBadRequest
 	}
 
 	return nil
