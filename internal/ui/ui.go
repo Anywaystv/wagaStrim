@@ -10,14 +10,17 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
 	"net/http/pprof"
 	"slices"
+	"strings"
 	"time"
 
+	"github.com/MarcFryd/wagaStrim/docs"
 	"github.com/MarcFryd/wagaStrim/internal/autostart"
 	"github.com/MarcFryd/wagaStrim/internal/config"
 	"github.com/MarcFryd/wagaStrim/internal/ingest"
@@ -32,11 +35,12 @@ var assets embed.FS
 
 // Server renders and mutates the config over HTTP.
 type Server struct {
-	cfg      *config.Config
-	log      logging.LeveledLogger
-	tpl      *template.Template
-	http     *http.Server
-	counters *stats.Registry
+	cfg            *config.Config
+	log            logging.LeveledLogger
+	tpl            *template.Template
+	http           *http.Server
+	counters       *stats.Registry
+	controlAtStart bool
 
 	// Set by main. Deleting a camera has to disconnect whatever is using it, and
 	// a delay change has to reach the buffers already running.
@@ -46,9 +50,14 @@ type Server struct {
 
 // pageData is what the template sees.
 type pageData struct {
-	Ingests      []cameraView
-	SenderBase   string
-	ReceiverBase string
+	Ingests           []cameraView
+	SenderBase        string
+	ReceiverBase      string
+	SecureSignal      bool
+	LANControl        bool
+	RemoteControl     bool
+	ControlAvailable  bool
+	ControlConfigured bool
 
 	// The slider cannot render a bound it does not know. A deployment that
 	// lowered the floor would otherwise show a control that refuses its own
@@ -111,12 +120,14 @@ func New(
 	}
 
 	srv := &Server{cfg: cfg, log: log, tpl: tpl, counters: counters, revoke: revoke, retarget: retarget}
+	srv.controlAtStart = cfg.Token() != ""
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", srv.handleHealth)
 	mux.HandleFunc("GET /{$}", srv.handlePage)
 	mux.HandleFunc("POST /api/ingests", srv.handleAdd)
 	mux.HandleFunc("POST /api/ingests/remove", srv.handleRemove)
+	mux.HandleFunc("POST /api/ingests/reset-key", srv.handleResetKey)
 	mux.HandleFunc("POST /api/ingests/delay", srv.handleDelay)
 	mux.HandleFunc("GET /api/stats", srv.handleStats)
 	mux.HandleFunc("POST /api/ingests/group", srv.handleGroup)
@@ -125,6 +136,14 @@ func New(
 	mux.HandleFunc("GET /api/reachability", srv.handleReachability)
 	mux.HandleFunc("GET /api/autostart", srv.handleAutostart)
 	mux.HandleFunc("POST /api/autostart", srv.handleSetAutostart)
+	mux.HandleFunc("POST /api/control/{scope}", srv.handleControlAccess)
+	mux.HandleFunc("POST /api/control/token", srv.handleCreateToken)
+	mux.HandleFunc("GET /api-guide", func(wri http.ResponseWriter, _ *http.Request) {
+		wri.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if _, writeErr := wri.Write(docs.API); writeErr != nil {
+			srv.log.Warnf("write API guide: %v", writeErr)
+		}
+	})
 
 	// Profiling lives on the loopback listener and nowhere else. It exposes
 	// memory contents and can be made to burn a core, so it must never be
@@ -202,7 +221,7 @@ func (s *Server) handleReachability(wri http.ResponseWriter, req *http.Request) 
 	report.SocketNote = socketNote()
 
 	// Remember a discovered address so the links stop reading as a placeholder.
-	if report.PublicHost != "" {
+	if report.PublicHost != "" && s.cfg.TLSCert == "" && s.cfg.PublicURL == "" {
 		if err := s.cfg.SetPublicHost(report.PublicHost); err != nil {
 			s.log.Warnf("save public host: %v", err)
 		}
@@ -301,17 +320,23 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	senderBase, receiverBase := s.cfg.SignalLinks(host)
 	data := pageData{
 		Ingests: views,
 		Floor:   s.cfg.Floor(),
 		// Moblin chooses the protocol from the scheme and rewrites whip to http
 		// itself, so it rejects a link that already says http. The line under the
 		// field tells anyone using another WHIP client to put http back.
-		SenderBase: fmt.Sprintf("whip://%s:%d/whip/", host, s.cfg.SignalPort),
+		SenderBase: senderBase,
 		// The Browser Source path is the default, so the receiver link is the
 		// player page rather than the raw WHEP endpoint. A WHEP client can still
 		// reach /whep/<same key> directly.
-		ReceiverBase: fmt.Sprintf("http://%s:%d/player/", host, s.cfg.SignalPort),
+		ReceiverBase:      receiverBase,
+		SecureSignal:      strings.HasPrefix(receiverBase, "https://"),
+		LANControl:        s.cfg.LANControlEnabled(),
+		RemoteControl:     s.cfg.RemoteControlEnabled(),
+		ControlAvailable:  s.controlAtStart,
+		ControlConfigured: s.cfg.Token() != "",
 	}
 
 	wri.Header().Set("content-type", "text/html; charset=utf-8")
@@ -319,6 +344,50 @@ func (s *Server) handlePage(wri http.ResponseWriter, _ *http.Request) {
 	if err := s.tpl.Execute(wri, data); err != nil {
 		s.log.Errorf("render: %v", err)
 	}
+}
+
+func (s *Server) handleCreateToken(wri http.ResponseWriter, _ *http.Request) {
+	wri.Header().Set("Cache-Control", "no-store")
+	token, err := s.cfg.CreateControlToken()
+	if errors.Is(err, config.ErrTokenExists) {
+		http.Error(wri, "a control token already exists; see config.json", http.StatusConflict)
+
+		return
+	}
+	if err != nil {
+		s.fail(wri, http.StatusInternalServerError, err)
+
+		return
+	}
+	wri.Header().Set("Content-Type", "application/json")
+	wri.WriteHeader(http.StatusCreated)
+	s.writeJSON(wri, struct {
+		Token           string `json:"token"`
+		RestartRequired bool   `json:"restartRequired"`
+	}{Token: token, RestartRequired: true})
+}
+
+func (s *Server) handleControlAccess(wri http.ResponseWriter, req *http.Request) {
+	scope := req.PathValue("scope")
+	if scope != "lan" && scope != "remote" {
+		http.Error(wri, "not found", http.StatusNotFound)
+
+		return
+	}
+	var body struct {
+		On *bool `json:"on"`
+	}
+	if err := decode(req, &body); err != nil || body.On == nil {
+		http.Error(wri, "on must be true or false", http.StatusBadRequest)
+
+		return
+	}
+	if err := s.cfg.SetControlAccess(scope, *body.On); err != nil {
+		http.Error(wri, "could not save control access", http.StatusInternalServerError)
+
+		return
+	}
+	wri.WriteHeader(http.StatusNoContent)
 }
 
 // mutate decodes a request body and runs a change against the config. All five
@@ -367,6 +436,27 @@ func (s *Server) handleRemove(wri http.ResponseWriter, req *http.Request) {
 
 		return nil
 	})
+}
+
+func (s *Server) handleResetKey(wri http.ResponseWriter, req *http.Request) {
+	var body idBody
+	if err := decode(req, &body); err != nil || body.ID == "" {
+		http.Error(wri, "camera id is required", http.StatusBadRequest)
+
+		return
+	}
+	camera, err := s.cfg.ResetSenderKey(body.ID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, config.ErrUnknownIngest) {
+			status = http.StatusNotFound
+		}
+		s.fail(wri, status, err)
+
+		return
+	}
+	s.revoke(camera.ID)
+	wri.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleDelay(wri http.ResponseWriter, req *http.Request) {

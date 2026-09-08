@@ -13,11 +13,11 @@ import (
 )
 
 func TestDelayIsClampedToTheFloor(t *testing.T) {
-	cfg := &Config{Ingests: []Ingest{{DelayMS: 0}, {DelayMS: 500}, {DelayMS: 99999}}}
+	cfg := &Config{Ingests: []Ingest{{DelayMS: -10}, {DelayMS: 500}, {DelayMS: 99999}}}
 	cfg.normalise()
 
-	assert.Equal(t, DelayFloorMS, cfg.Ingests[0].DelayMS, "zero must rise to the floor")
-	assert.Equal(t, DelayFloorMS, cfg.Ingests[1].DelayMS, "below floor must rise to the floor")
+	assert.Equal(t, 0, cfg.Ingests[0].DelayMS, "negative values clamp to zero")
+	assert.Equal(t, 500, cfg.Ingests[1].DelayMS, "valid delays are preserved")
 	assert.Equal(t, DelayMaxMS, cfg.Ingests[2].DelayMS, "above max must fall to the max")
 }
 
@@ -61,7 +61,10 @@ func TestSetDelayClamps(t *testing.T) {
 
 	ing, err := cfg.AddIngest("Handheld")
 	require.NoError(t, err)
-	require.NoError(t, cfg.SetDelay(ing.ID, 10))
+	assert.Equal(t, 2000, ing.DelayMS, "new cameras start with two seconds")
+	require.NoError(t, cfg.SetDelay(ing.ID, 0))
+	assert.Equal(t, 0, cfg.Ingests[0].DelayMS, "zero delay is supported")
+	require.NoError(t, cfg.SetDelay(ing.ID, -10))
 
 	assert.Equal(t, DelayFloorMS, cfg.Ingests[0].DelayMS, "the floor is not a suggestion")
 }
@@ -73,6 +76,15 @@ func TestSaveIsOwnerOnly(t *testing.T) {
 	info, err := os.Stat(cfg.path)
 	require.NoError(t, err)
 	assert.Equal(t, "-rw-------", info.Mode().String(), "keys live in this file")
+}
+
+func TestSaveDoesNotReusePredictableTemporaryFile(t *testing.T) {
+	cfg := &Config{path: t.TempDir() + "/config.json"}
+	require.NoError(t, os.WriteFile(cfg.path+".tmp", []byte("untouched"), 0o600))
+	require.NoError(t, cfg.Save())
+	stale, err := os.ReadFile(cfg.path + ".tmp")
+	require.NoError(t, err)
+	assert.Equal(t, "untouched", string(stale))
 }
 
 // The mime type comes from pion and the identifier is ours, so the mapping is

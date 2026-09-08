@@ -6,6 +6,7 @@ package egress
 import "errors"
 
 var (
+	ErrCapacity = errors.New("subscriber limit reached")
 	// ErrUnknownKey is returned when a key matches no ingest.
 	ErrUnknownKey = errors.New("unknown key")
 	// ErrWrongRole is returned when a sender key was presented to a receiver endpoint.

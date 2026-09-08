@@ -1,0 +1,134 @@
+<!-- SPDX-FileCopyrightText: 2026 wagaStrim contributors
+     SPDX-License-Identifier: MIT -->
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WagaStrim API setup</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: var(--panel-sunken) }
+  code { overflow-wrap: anywhere }
+  a { color: var(--accent-text) }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+  h2 { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--line-strong) }
+  dt { margin-top: 1rem; font-weight: 600 }
+  dd { margin: .25rem 0 0 }
+</style>
+<main>
+<a href="/">Back to setup</a>
+<h1>API setup</h1>
+<p>Create cameras, get links and reset publishing keys from your own dashboard.
+Examples use default ports; replace the addresses and secrets.</p>
+
+<h2>1. Create the control token</h2>
+<p>Open <a href="/">Setup</a> on your server or computer.
+In <strong>Reachability</strong>, click <strong>Generate control token</strong>,
+save it in a password manager and restart WagaStrim.</p>
+<p>Or run locally, then restart (Windows: use <code>curl.exe</code>):</p>
+<pre><code>curl -X POST http://127.0.0.1:7330/api/control/token</code></pre>
+<p>Returns <code>{"token":"YOUR_SECRET","restartRequired":true}</code> (201).
+Existing tokens are never overwritten. Find <code>controlToken</code> in
+<code>config.json</code>; its path appears in the startup log.</p>
+<p><strong>Keep the token on your backend.</strong> It controls all cameras;
+never give it to Moblin, OBS or browser code.</p>
+<details><summary>Replace or disable the control token</summary>
+<p>Stop WagaStrim. Replace <code>controlToken</code> in the config with a random
+password of at least 32 characters, then restart and update clients.
+Remove the field to disable the API.</p></details>
+
+<h2>2. Set the addresses</h2>
+<p>Stop WagaStrim, merge these fields into <code>config.json</code> without
+removing other settings, then restart:</p>
+<pre><code>{
+  "publicHost": "192.168.1.50",
+  "controlLan": true,
+  "controlRemote": true
+}</code></pre>
+<p>Set <code>publicHost</code> to your server's reachable IP or hostname.
+Without it, links use localhost. The Local/Remote toggles allow API clients;
+they do not open firewall ports or change camera access.</p>
+<p>A configured token allows remote dashboards by default. Set <code>controlRemote</code>
+to <code>false</code> to block internet clients; restrict TCP 7333 by firewall.</p>
+<details><summary>Upgrading an earlier test build</summary>
+<p>Earlier builds could omit a saved <code>false</code> value. To keep remote access
+off, explicitly set <code>"controlRemote": false</code> before upgrading.</p></details>
+<p><strong>Ports:</strong> TCP 7333 API, TCP 7331 signaling, UDP 7332 media.
+TCP 7330 Setup stays local (use an SSH tunnel for a remote server).
+Cellular streaming needs reachable public media/signaling ports.</p>
+<p><strong>HTTP exposes secrets.</strong> Use HTTPS or an encrypted VPN for internet access.</p>
+<details><summary>HTTPS and reverse proxies</summary>
+<p>Set <code>tlsCert</code>, <code>tlsKey</code> and the certificate hostname as
+<code>publicHost</code>, then restart. Signaling and control use HTTPS on the same ports.
+A signaling <code>publicUrl</code> overrides media-link addresses but does not secure
+the control API. Protect that listener separately. Access toggles inspect the proxy's
+address, not forwarded headers.</p></details>
+
+<h2>3. Generate camera keys and links</h2>
+<p>Send a name (1–48 characters). Keep your token out of shared shell history and logs.</p>
+<pre><code>curl http://127.0.0.1:7333/control/ingests -H "Authorization: Bearer YOUR_SECRET" -H "Content-Type: application/json" -d '{"label":"Phone"}'</code></pre>
+<details><summary>Windows PowerShell example</summary>
+<pre><code>$credential = Read-Host "Control token"
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:7333/control/ingests -Headers @{Authorization="Bearer $credential"} -ContentType application/json -Body '{"label":"Phone"}'</code></pre>
+</details>
+<p>Returns 201 with camera settings and links (keys abbreviated):</p>
+<pre><code>{
+  "id": "...",
+  "label": "Phone",
+  "senderKey": "s_...",
+  "receiverKey": "r_...",
+  "codecs": ["h264"],
+  "delayMs": 2000,
+  "links": {
+    "moblin": "whip://192.168.1.50:7331/whip/s_...",
+    "whip": "http://192.168.1.50:7331/whip/s_...",
+    "whep": "http://192.168.1.50:7331/whep/r_...",
+    "player": "http://192.168.1.50:7331/player/r_..."
+  }
+}</code></pre>
+<dl>
+<dt>links.moblin</dt><dd>Paste into Moblin. HTTPS uses <code>whips://</code>.</dd>
+<dt>links.whip</dt><dd>Publishing URL for other WHIP clients.</dd>
+<dt>links.player</dt><dd>Browser preview or OBS Browser Source. Use H.264 + Opus;
+enable <strong>Control audio via OBS</strong>.</dd>
+<dt>links.whep</dt><dd>Raw endpoint for WHEP receivers; not a webpage.</dd>
+</dl>
+<p>Keep both keys private. New cameras use H.264 and 2000 ms delay.
+AAC needs a compatible receiver; browser preview requires Opus.
+Use OBS for Twitch/Kick output.</p>
+
+<h2>4. Retrieve cameras and status</h2>
+<pre><code>curl http://127.0.0.1:7333/control/ingests -H "Authorization: Bearer YOUR_SECRET"
+curl http://127.0.0.1:7333/control/stats -H "Authorization: Bearer YOUR_SECRET"</code></pre>
+<p>List returns <code>{"ingests":[...]}</code> with keys and links.
+Stats returns each camera ID's status; <code>live</code> means a publisher is active.</p>
+
+<h2>Reset a stream key</h2>
+<pre><code>curl -X POST http://127.0.0.1:7333/control/ingests/CAMERA_ID/reset-key -H "Authorization: Bearer YOUR_SECRET"</code></pre>
+<p>Returns 200 with the camera and updated links. The old sender key stops working
+and sessions disconnect. <strong>The preview link stays unchanged.</strong></p>
+<p>For your dashboard button: confirm, call from your backend, save the returned key
+and show the new sender link. WagaStrim's button is under <strong>Camera settings</strong>.</p>
+<p>Creating or resetting again makes new keys. After a lost response, list cameras
+before retrying. Use camera IDs, not names.</p>
+
+<details><summary>Advanced: replace the camera list</summary>
+<p><code>PUT /control/ingests</code> accepts <code>{"ingests":[...]}</code> and replaces
+the <strong>entire list</strong>. An empty list deletes all cameras. Use one list owner;
+there is no conflict detection.</p>
+<p>Each camera has <code>id</code> (nonempty and unique), <code>label</code>,
+<code>senderKey</code> (<code>s_</code> + 32 lowercase hex characters),
+<code>receiverKey</code> (<code>r_</code> + 32 lowercase hex characters),
+<code>codecs</code> (h264, h265, av1), <code>delayMs</code> (0–10000) and optional
+<code>syncGroup</code>. Keys must be unique and cryptographically random.
+Strip the read-only <code>links</code> field from GET results before PUT.
+Missing cameras and changed keys/codecs disconnect sessions; 204 means saved.</p>
+</details>
+
+<h2>Errors</h2>
+<p><strong>400:</strong> invalid request · <strong>404:</strong> wrong token, blocked address or missing camera/route ·
+<strong>409:</strong> token already exists · <strong>429:</strong> slow down ·
+<strong>500:</strong> save failed; check logs.</p>
+<p>Connection refused? Restart after creating the token, then check the address and firewall.</p>
+</main>
+</html>

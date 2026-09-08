@@ -8,6 +8,7 @@ package listen
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pion/logging"
+	"golang.org/x/net/netutil"
 )
 
 // grace is how long an in-flight request has to finish once shutdown starts.
@@ -22,7 +24,14 @@ const grace = 5 * time.Second
 
 // Serve binds addr, serves until ctx ends, then drains. The name appears in the
 // log line and in any error, so a failure says which listener stopped.
-func Serve(ctx context.Context, log logging.LeveledLogger, srv *http.Server, addr, name string) error {
+func Serve(
+	ctx context.Context, log logging.LeveledLogger, srv *http.Server,
+	addr, name string, certificate ...string,
+) error {
+	srv.ReadTimeout = 10 * time.Second
+	srv.WriteTimeout = 20 * time.Second
+	srv.IdleTimeout = 30 * time.Second
+	srv.MaxHeaderBytes = 16 << 10
 	var lcfg net.ListenConfig
 
 	listener, err := lcfg.Listen(ctx, "tcp", addr)
@@ -32,7 +41,16 @@ func Serve(ctx context.Context, log logging.LeveledLogger, srv *http.Server, add
 
 	errs := make(chan error, 1)
 
-	go func() { errs <- srv.Serve(listener) }()
+	listener = netutil.LimitListener(listener, 128)
+	go func() {
+		if len(certificate) == 2 && (certificate[0] != "" || certificate[1] != "") {
+			srv.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+			errs <- srv.ServeTLS(listener, certificate[0], certificate[1])
+		} else {
+			errs <- srv.Serve(listener)
+		}
+	}()
+	defer func() { _ = listener.Close() }()
 
 	log.Infof("%s on %s", name, listener.Addr())
 
@@ -47,6 +65,12 @@ func Serve(ctx context.Context, log logging.LeveledLogger, srv *http.Server, add
 		stop, cancel := context.WithTimeout(context.WithoutCancel(ctx), grace)
 		defer cancel()
 
-		return srv.Shutdown(stop)
+		if err := srv.Shutdown(stop); err != nil {
+			_ = srv.Close()
+
+			return err
+		}
+
+		return nil
 	}
 }

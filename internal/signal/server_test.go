@@ -6,8 +6,11 @@ package signal
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/MarcFryd/wagaStrim/internal/config"
+	"github.com/pion/logging"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -53,4 +56,16 @@ func TestKeyFrom(t *testing.T) {
 			assert.Equal(t, tc.want, keyFrom(req))
 		})
 	}
+}
+
+func TestUnknownKeyRejectedBeforeReadingBody(t *testing.T) {
+	srv := New(&config.Config{}, logging.NewDefaultLoggerFactory().NewLogger("test"), nil, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/whip/unknown", strings.NewReader("offer"))
+	res := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(res, req)
+	assert.Equal(t, http.StatusNotFound, res.Code)
+	buf := make([]byte, 5)
+	read, err := req.Body.Read(buf)
+	assert.NoError(t, err)
+	assert.Equal(t, "offer", string(buf[:read]))
 }

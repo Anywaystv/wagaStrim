@@ -20,7 +20,7 @@ function element(tag = "span") {
 
 test("reachability stays visible and refreshes masked and visible links", async () => {
   const nodes = Object.fromEntries(
-    ["check", "reach", "reach-status", "total", "autostart", "autostart-note"].map(id => [id, element()]),
+    ["check", "reach", "reach-status", "total", "media-status", "autostart", "autostart-note"].map(id => [id, element()]),
   );
   const links = [true, false].map(masked => ({
     dataset: { secret: `${masked ? "whip" : "http"}://127.0.0.1:7331/${masked ? "whip/s_test" : "player/r_test"}` },
@@ -84,6 +84,25 @@ test("camera summary is in the header and reachability has a privacy warning", (
   assert.ok(header.includes('id="total"'));
   assert.ok(!header.includes('id="reach-status"'));
   assert.ok(html.includes("(don't show on stream)"));
+});
+
+test("header media status follows live and idle stats", async () => {
+  const nodes = Object.fromEntries(
+    ["check", "reach", "reach-status", "total", "media-status", "autostart", "autostart-note"].map(id => [id, element()]),
+  );
+  let stats = {};
+  const context = {
+    document: { addEventListener() {}, getElementById: id => nodes[id], querySelectorAll: () => [] },
+    fetch: async () => ({ ok: true, json: async () => stats }),
+    setInterval() {}, console,
+  };
+  runInNewContext(read("internal/ui/web/app.js"), context);
+  for (const live of [true, false]) {
+    stats = { camera: { live, bitrateKbps: 5000 } };
+    await context.poll();
+    assert.equal(nodes["media-status"].textContent, live ? "live" : "no media");
+    assert.equal(nodes["media-status"].className, live ? "status-button good" : "status-button warn");
+  }
 });
 
 test("successful audio playback dismisses only the audio prompt", async () => {

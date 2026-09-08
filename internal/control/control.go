@@ -13,7 +13,10 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -52,16 +55,19 @@ func New(
 		cfg:      cfg,
 		log:      log,
 		counters: counters,
-		listen:   fmt.Sprintf(":%d", cfg.ControlPort),
+		listen:   net.JoinHostPort(cfg.ControlBind, fmt.Sprint(cfg.ControlPort)),
 		revoke:   revoke,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("PUT /control/ingests", srv.authed(srv.handleIngests))
+	mux.HandleFunc("POST /control/ingests", srv.authed(srv.handleCreate))
+	mux.HandleFunc("GET /control/ingests", srv.authed(srv.handleList))
+	mux.HandleFunc("POST /control/ingests/{id}/reset-key", srv.authed(srv.handleResetKey))
 	mux.HandleFunc("GET /control/stats", srv.authed(srv.handleStats))
 
 	srv.http = &http.Server{
-		Handler:           mux,
+		Handler:           listen.Guard(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -70,15 +76,23 @@ func New(
 
 // Serve blocks until the context is canceled.
 func (s *Server) Serve(ctx context.Context) error {
-	return listen.Serve(ctx, s.log, s.http, s.listen, "control")
+	return listen.Serve(ctx, s.log, s.http, s.listen, "control", s.cfg.TLSCert, s.cfg.TLSKey)
 }
 
 // authed rejects anything without the configured bearer token. Every failure is
 // the same 404 as an unknown route, so the port says nothing about what it is.
 func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 	return func(wri http.ResponseWriter, req *http.Request) {
-		offered := strings.TrimPrefix(req.Header.Get("authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(offered), []byte(s.cfg.ControlToken)) != 1 {
+		// Inspect the socket peer, never a client-supplied forwarding header.
+		peer, err := netip.ParseAddrPort(req.RemoteAddr)
+		if err != nil || !s.allowedAddress(peer.Addr()) {
+			http.Error(wri, "not found", http.StatusNotFound)
+
+			return
+		}
+		offered, bearer := strings.CutPrefix(req.Header.Get("authorization"), "Bearer ")
+		token := s.cfg.Token()
+		if !bearer || token == "" || subtle.ConstantTimeCompare([]byte(offered), []byte(token)) != 1 {
 			s.log.Warnf("control request without a valid token: %s", req.URL.Path)
 			http.Error(wri, "not found", http.StatusNotFound)
 
@@ -87,6 +101,19 @@ func (s *Server) authed(next http.HandlerFunc) http.HandlerFunc {
 
 		next(wri, req)
 	}
+}
+
+func (s *Server) allowedAddress(address netip.Addr) bool {
+	address = address.Unmap()
+
+	if address.IsLoopback() {
+		return true
+	}
+	if address.IsPrivate() || address.IsLinkLocalUnicast() {
+		return s.cfg.LANControlEnabled()
+	}
+
+	return address.IsGlobalUnicast() && s.cfg.RemoteControlEnabled()
 }
 
 // handleIngests replaces the whole camera list. It is declarative because the
@@ -139,6 +166,9 @@ func decode(req *http.Request, into any) error {
 
 	if err := dec.Decode(into); err != nil {
 		return fmt.Errorf("%w: %w", ErrBadRequest, err)
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return ErrBadRequest
 	}
 
 	return nil

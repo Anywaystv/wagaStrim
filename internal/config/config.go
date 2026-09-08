@@ -16,14 +16,9 @@ import (
 	"sync"
 )
 
-// Delay bounds in milliseconds. The floor is not a default, it is a floor: two
-// seconds of buffered media is what keeps OBS fed through a tunnel or a tower
-// handoff. A value below it is clamped rather than honored, and the file is
-// never trusted to stay inside the range. A deployment whose camera cannot drop
-// a packet may lower the floor itself, down to and including zero, which is why
-// FloorMS is a pointer and absent is not the same setting as nothing.
+// Delay bounds are independent of the initial buffer for a new camera.
 const (
-	DelayFloorMS   = 2000
+	DelayFloorMS   = 0
 	DelayDefaultMS = 2000
 	DelayMaxMS     = 10000
 )
@@ -96,6 +91,15 @@ type Ingest struct {
 type Config struct {
 	Version    int    `json:"version"`
 	PublicHost string `json:"publicHost"`
+	// Bind addresses can restrict signaling and control to a LAN or VPN interface.
+	SignalBind    string `json:"signalBind,omitempty"`
+	ControlBind   string `json:"controlBind,omitempty"`
+	ControlLAN    *bool  `json:"controlLan,omitempty"`
+	ControlRemote *bool  `json:"controlRemote,omitempty"`
+	TLSCert       string `json:"tlsCert,omitempty"`
+	TLSKey        string `json:"tlsKey,omitempty"`
+	// PublicURL is the HTTPS origin of a local reverse proxy.
+	PublicURL string `json:"publicUrl,omitempty"`
 	// ICEPublicIPs are addresses reached through a 1:1 UDP port forward.
 	// Legacy public/local entries are accepted, but only the public half is
 	// advertised. Local candidates remain available for nearby subscribers.
@@ -110,11 +114,7 @@ type Config struct {
 	ControlToken string `json:"controlToken,omitempty"`
 	ControlPort  int    `json:"controlPort,omitempty"`
 
-	// FloorMS lowers the playout floor for a deployment whose cameras are not on
-	// cellular. Absent means DelayFloorMS, which is what a person installing this
-	// on their own machine always gets. It is a pointer because zero is a floor a
-	// deployment may legitimately ask for, so absent and zero cannot be the same
-	// value.
+	// FloorMS lets deployments impose a higher minimum. Unset allows zero delay.
 	FloorMS *int     `json:"delayFloorMs,omitempty"`
 	Ingests []Ingest `json:"ingests"`
 
@@ -239,9 +239,7 @@ func (c *Config) normalise() {
 	}
 }
 
-// clampFloor holds the configured floor inside the range a deployment may pick.
-// Absent means the file said nothing, which is the two second product floor. A
-// stated zero is honored, which is the whole reason this takes a pointer.
+// clampFloor retains explicit deployment limits within the supported range.
 func clampFloor(floorMS *int) int {
 	switch {
 	case floorMS == nil:
@@ -255,9 +253,7 @@ func clampFloor(floorMS *int) int {
 	}
 }
 
-// clampDelay holds a playout target inside the permitted range. The floor is the
-// product, not a preference, so it is applied on every path that can set a delay
-// rather than trusting a caller to have applied it already.
+// clampDelay applies the same bounds to loaded settings and API updates.
 func (c *Config) clampDelay(delayMS int) int {
 	floor := clampFloor(c.FloorMS)
 
@@ -291,11 +287,22 @@ func (c *Config) saveLocked() error {
 		return fmt.Errorf("%w: %w", ErrWriteConfig, err)
 	}
 
-	tmp := c.path + ".tmp"
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o600); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(c.path), ".config-*.tmp")
+	if err != nil {
 		return fmt.Errorf("%w: %w", ErrWriteConfig, err)
 	}
-
+	tmp := file.Name()
+	defer func() { _ = os.Remove(tmp) }()
+	if _, err = file.Write(append(raw, '\n')); err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrWriteConfig, err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("%w: %w", ErrWriteConfig, closeErr)
+	}
 	if err := os.Rename(tmp, c.path); err != nil {
 		return fmt.Errorf("%w: %w", ErrWriteConfig, err)
 	}
@@ -332,7 +339,13 @@ func (c *Config) AddIngest(label string) (Ingest, error) {
 		DelayMS:     c.clampDelay(DelayDefaultMS),
 	})
 
-	return c.Ingests[len(c.Ingests)-1], c.saveLocked()
+	if err := c.saveLocked(); err != nil {
+		c.Ingests = c.Ingests[:len(c.Ingests)-1]
+
+		return Ingest{}, err
+	}
+
+	return c.Ingests[len(c.Ingests)-1], nil
 }
 
 // ReplaceIngests sets the whole list from a deployment that owns it elsewhere.
@@ -363,9 +376,15 @@ func (c *Config) ReplaceIngests(next []Ingest) ([]string, error) {
 		replacement[idx] = ing
 	}
 
+	previous := c.Ingests
 	c.Ingests = replacement
+	if err := c.saveLocked(); err != nil {
+		c.Ingests = previous
 
-	return stale, c.saveLocked()
+		return nil, err
+	}
+
+	return stale, nil
 }
 
 // validateIngests rejects a list that could not be resolved unambiguously.

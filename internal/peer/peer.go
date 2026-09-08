@@ -9,6 +9,7 @@ package peer
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/pion/logging"
 	"github.com/pion/webrtc/v4"
@@ -39,7 +40,13 @@ func Answer(conn *webrtc.PeerConnection, offer webrtc.SessionDescription) (strin
 		return "", fmt.Errorf("%w: local description: %w", ErrNegotiate, err)
 	}
 
-	<-gathered
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-gathered:
+	case <-timer.C:
+		return "", fmt.Errorf("%w: ICE gathering timed out", ErrNegotiate)
+	}
 
 	return conn.LocalDescription().SDP, nil
 }

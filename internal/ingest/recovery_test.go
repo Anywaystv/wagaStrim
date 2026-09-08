@@ -17,6 +17,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/time/rate"
 )
 
 func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
@@ -32,6 +33,9 @@ func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, receiver.Close()) })
 	phone, _ := publisher(t)
+	// Read credentials before SetRemoteDescription starts ICE asynchronously.
+	local, err := receiver.SCTP().Transport().ICETransport().GetLocalParameters()
+	require.NoError(t, err)
 	require.NoError(t, receiver.SetRemoteDescription(webrtc.SessionDescription{
 		Type: webrtc.SDPTypeOffer, SDP: offerFrom(t, phone),
 	}))
@@ -40,8 +44,6 @@ func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
 	gathered := webrtc.GatheringCompletePromise(receiver)
 	require.NoError(t, receiver.SetLocalDescription(answer))
 	<-gathered
-	local, err := receiver.SCTP().Transport().ICETransport().GetLocalParameters()
-	require.NoError(t, err)
 	remote, err := phone.SCTP().Transport().ICETransport().GetLocalParameters()
 	require.NoError(t, err)
 	username := local.UsernameFragment + ":" + remote.UsernameFragment
@@ -146,7 +148,7 @@ func TestRecoveryCompletedGroupsKeepOrderBounded(t *testing.T) {
 }
 
 func TestRecoveryParityRebuildsOneMissingPacket(t *testing.T) {
-	receiver, sender := recoverySocketPair(t)
+	receiver, sender := authenticatedRecoverySocketPair(t)
 	packets := make([][]byte, 8)
 	for index := range packets {
 		packets[index] = testRecoveryRTP(200+uint16(index), byte(index+1))
@@ -166,8 +168,26 @@ func TestRecoveryParityRebuildsOneMissingPacket(t *testing.T) {
 	assert.Equal(t, packets[3], rebuilt)
 }
 
+func TestRecoveryTracksBurstLossWithinHistory(t *testing.T) {
+	for _, start := range []uint16{100, 65500} {
+		conn, sender := recoverySocketPair(t)
+		remote := conn.identity(sender.LocalAddr())
+		stream := &recoveryStream{missing: map[uint16]time.Time{}, enabled: true}
+		for _, offset := range []uint16{0, 2, 102} {
+			conn.trackGapLocked(recoveryPacketID{remote: remote, ssrc: 1, sequenceNumber: start + offset}, stream)
+		}
+		require.Len(t, stream.missing, 100)
+		assert.Contains(t, stream.missing, start+1)
+		assert.Contains(t, stream.missing, start+101)
+		conn.trackGapLocked(recoveryPacketID{remote: remote, ssrc: 1, sequenceNumber: start + 10000}, stream)
+		require.Len(t, stream.missing, recoveryHistorySize-1)
+		assert.NotContains(t, stream.missing, start+1)
+		assert.Contains(t, stream.missing, start+9999)
+	}
+}
+
 func TestRecoveryRequestsEveryMissingPacket(t *testing.T) {
-	receiver, sender := recoverySocketPair(t)
+	receiver, sender := authenticatedRecoverySocketPair(t)
 	packets := make([][]byte, 8)
 	for index := range packets {
 		packets[index] = testRecoveryRTP(300+uint16(index), byte(index+1))
@@ -202,7 +222,7 @@ func TestRecoveryRequestsEveryMissingPacket(t *testing.T) {
 }
 
 func TestRecoveryCompletesPendingGroupWhenOneRepairArrives(t *testing.T) {
-	receiver, sender := recoverySocketPair(t)
+	receiver, sender := authenticatedRecoverySocketPair(t)
 	packets := make([][]byte, 8)
 	for index := range packets {
 		packets[index] = testRecoveryRTP(400+uint16(index), byte(index+1))
@@ -233,7 +253,7 @@ func TestRecoveryCompletesPendingGroupWhenOneRepairArrives(t *testing.T) {
 }
 
 func TestRecoveryRejectsMalformedParity(t *testing.T) {
-	receiver, sender := recoverySocketPair(t)
+	receiver, sender := authenticatedRecoverySocketPair(t)
 	malformed := []byte{'W', 'G', 'R', '1', recoveryParityType, 32, 0, 0, 0, 0, 0, 1}
 	_, err := sender.Write(malformed)
 	require.NoError(t, err)
@@ -246,7 +266,7 @@ func TestRecoveryRejectsMalformedParity(t *testing.T) {
 func TestRecoveryLengthMismatchKeepsMuxOpen(t *testing.T) {
 	for _, pending := range []bool{false, true} {
 		t.Run(map[bool]string{false: "immediate", true: "pending"}[pending], func(t *testing.T) {
-			conn, sender := recoverySocketPair(t)
+			conn, sender := authenticatedRecoverySocketPair(t)
 			mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: conn})
 			t.Cleanup(func() { require.NoError(t, mux.Close()) })
 			probe, err := mux.GetConn("probe", conn.LocalAddr())
@@ -306,7 +326,7 @@ func TestRecoveryExpiresRequestsOutsideSenderHistory(t *testing.T) {
 }
 
 func TestRecoveryDoesNotSharePacketsBetweenPublishers(t *testing.T) {
-	receiver, sender := recoverySocketPair(t)
+	receiver, sender := authenticatedRecoverySocketPair(t)
 	serverAddress, ok := receiver.LocalAddr().(*net.UDPAddr)
 	require.True(t, ok)
 	other, err := net.DialUDP("udp4", nil, serverAddress)
@@ -374,6 +394,50 @@ func recoverySocketPair(t *testing.T) (*recoveryConn, *net.UDPConn) {
 	log := logging.NewDefaultLoggerFactory().NewLogger("recovery-test")
 
 	return newRecoveryConn(server, log), sender
+}
+
+func authenticatedRecoverySocketPair(t *testing.T) (*recoveryConn, *net.UDPConn) {
+	t.Helper()
+	conn, sender := recoverySocketPair(t)
+	bindRecoveryPath(t, conn, sender.LocalAddr(), "receiver:phone", true)
+	// Drain the authenticated binding response before checking repair requests.
+	require.NoError(t, sender.SetReadDeadline(time.Now().Add(time.Second)))
+	_, err := sender.Read(make([]byte, 1500))
+	require.NoError(t, err)
+
+	return conn, sender
+}
+
+func TestUnauthenticatedRecoveryDoesNotAllocate(t *testing.T) {
+	conn, sender := recoverySocketPair(t)
+	packets := [][]byte{testRecoveryRTP(1, 1), testRecoveryRTP(10000, 2)}
+	for _, packet := range packets {
+		_, err := sender.Write(packet)
+		require.NoError(t, err)
+		assert.Equal(t, packet, readRecoveryPacket(t, conn))
+	}
+	_, err := sender.Write(testRecoveryParity(packets))
+	require.NoError(t, err)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(20*time.Millisecond)))
+	_, _, err = conn.ReadFrom(make([]byte, 1500))
+	require.Error(t, err)
+	assert.Empty(t, conn.packets)
+	assert.Empty(t, conn.streams)
+	assert.Empty(t, conn.groups)
+}
+
+func TestRecoveryBudgetBypassesHistoryWithoutDroppingMedia(t *testing.T) {
+	conn, sender := authenticatedRecoverySocketPair(t)
+	conn.work = rate.NewLimiter(0, 0)
+	packet := testRecoveryRTP(100, 1)
+	_, err := sender.Write(packet)
+	require.NoError(t, err)
+	assert.Equal(t, packet, readRecoveryPacket(t, conn))
+	assert.Empty(t, conn.packets)
+	assert.Empty(t, conn.streams)
+	_, recovered := conn.consumeParity(testRecoveryParity([][]byte{packet, testRecoveryRTP(101, 2)}), sender.LocalAddr())
+	assert.False(t, recovered)
+	assert.Empty(t, conn.groups)
 }
 
 func readRecoveryPacket(t *testing.T, receiver *recoveryConn) []byte {

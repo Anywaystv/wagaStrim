@@ -162,7 +162,7 @@ func fixture(t *testing.T, mode routing) (func() uint16, *arrivals, *paths) {
 		SenderKey:   config.SenderPrefix + "00000000000000000000000000000001",
 		ReceiverKey: config.ReceiverPrefix + "00000000000000000000000000000002",
 		Codecs:      []string{config.CodecH264},
-		DelayMS:     config.DelayFloorMS,
+		DelayMS:     config.DelayDefaultMS,
 	}
 	cfg := &config.Config{Ingests: []config.Ingest{cam}}
 

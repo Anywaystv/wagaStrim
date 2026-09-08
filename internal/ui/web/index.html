@@ -9,10 +9,14 @@
   <span class="wordmark">waga<span>Strim</span></span>
   <span class="header-end">
     <span class="muted" id="total">No cameras streaming.</span>
-    <span class="status-button warn">no media</span>
+    <span id="media-status" class="status-button warn" role="status">no media</span>
   </span>
 </header>
 <main>
+  {{if not .SecureSignal}}
+  <p class="card" role="status">HTTP is enabled. Stream keys are sent without encryption.
+    Use HTTPS for internet connections, or connect through an encrypted VPN.</p>
+  {{end}}
   <section class="card">
     <div class="row between">
       <div class="row">
@@ -22,7 +26,33 @@
       <button class="button" id="check">Check</button>
     </div>
     <p class="muted" id="reach-status">Not checked yet.</p>
-    <p class="muted" id="reach" role="status" aria-live="polite"></p>
+    <div class="muted" id="reach" role="status" aria-live="polite"></div>
+    <p class="muted">Control API access requires a token. Camera streaming and preview links are unaffected.</p>
+    <p><a class="button" href="/api-guide">API setup guide — tokens, keys and links</a></p>
+    {{if not .ControlConfigured}}
+    <button class="button" id="create-token">Generate control token</button>
+    <div id="new-token" hidden>
+      <span class="field-label" id="token-label">Control token · keep private</span>
+      <div class="row camera-link">
+        <div class="secret masked" role="group" aria-labelledby="token-label"
+             data-destination="control API">••••••••••••••••</div>
+        <button class="button" data-reveal aria-label="Show control token">Show</button>
+        <button class="button" data-copy aria-label="Copy control token">Copy</button>
+      </div>
+    </div>
+    {{end}}
+    <p class="muted" id="token-note" role="status" aria-live="polite">{{if and .ControlConfigured (not .ControlAvailable)}}Token saved. Restart WagaStrim to enable the control API.{{end}}</p>
+    <label class="row">
+      <input type="checkbox" id="control-lan" {{if .LANControl}}checked{{end}} {{if not .ControlAvailable}}disabled{{end}}>
+      <span>Local access — Wi-Fi and VPN computers</span>
+    </label>
+    <p class="muted" id="control-lan-note" role="status" aria-live="polite">{{if not .ControlAvailable}}The control API is inactive. Configure a control token to use this option.{{end}}</p>
+    <label class="row">
+      <input type="checkbox" id="control-remote" {{if .RemoteControl}}checked{{end}} {{if not .ControlAvailable}}disabled{{end}}>
+      <span>Remote access — internet connections</span>
+    </label>
+    <p class="muted">Enabled by default with a control token. Use HTTPS or a VPN and restrict the control port by firewall.</p>
+    <p class="muted" id="control-remote-note" role="status" aria-live="polite"></p>
   </section>
 
   <section class="card">
@@ -41,84 +71,92 @@
   {{end}}
 
   {{range .Ingests}}
-  <section class="card" data-id="{{.ID}}">
-    <div class="row between">
+  <section class="card camera-card" data-id="{{.ID}}">
+    <div class="camera-heading">
       <h2>
         <label class="sr-only" for="label-{{.ID}}">Camera name</label>
         <input type="text" class="label-edit" id="label-{{.ID}}" value="{{.Label}}"
                maxlength="48" data-label="{{.ID}}">
       </h2>
-      <span class="row">
+      <p class="muted" data-stats>Waiting for a publisher.</p>
+      <span class="row camera-actions">
         <span class="status-button" data-status>idle</span>
         <button class="button quiet" data-remove="{{.ID}}">Remove</button>
       </span>
     </div>
 
-    <p class="muted" data-stats>Waiting for a publisher.</p>
-
+    <details class="camera-settings">
+      <summary>Camera settings<span class="sr-only"> for {{.Label}}</span></summary>
     <div class="field">
-      <span class="field-label" id="send-{{.ID}}">Sender link, for Moblin</span>
-      <div class="row">
+      <span class="field-label" id="send-{{.ID}}">Camera input · Moblin</span>
+      <div class="row camera-link camera-input-link">
         <div class="secret masked" role="group" aria-labelledby="send-{{.ID}}"
              data-destination="Moblin" data-secret="{{$.SenderBase}}{{.SenderKey}}">••••••••••••••••</div>
+        <button class="button quiet" data-reset-key="{{.ID}}">Reset stream key</button>
         <button class="button" data-reveal aria-label="Show the sender link for {{.Label}}">Show</button>
         <button class="button" data-copy aria-label="Copy the sender link for {{.Label}}">Copy</button>
       </div>
-      <p class="muted">Moblin wants the scheme it is given here. Another WHIP app that asks for a
-        plain address takes the same link with http in front of it.</p>
+      <p class="muted">Paste this link into Moblin. Other WHIP apps use {{if $.SecureSignal}}https{{else}}http{{end}} instead of {{if $.SecureSignal}}whips{{else}}whip{{end}}.</p>
+      <p class="muted" data-reset-note role="status" aria-live="polite">Disconnects this stream. Update the sender with the new link; the preview link stays unchanged.</p>
     </div>
 
     <div class="field">
-      <span class="field-label" id="recv-{{.ID}}">Receiver link. Add a Browser Source in OBS and paste this as the URL</span>
-      <div class="row">
+      <span class="field-label" id="recv-{{.ID}}">Preview output · OBS</span>
+      <div class="row camera-link">
         <div class="secret masked" role="group" aria-labelledby="recv-{{.ID}}"
              data-destination="OBS" data-secret="{{$.ReceiverBase}}{{.ReceiverKey}}">••••••••••••••••</div>
         <button class="button" data-reveal aria-label="Show the receiver link for {{.Label}}">Show</button>
         <button class="button" data-copy aria-label="Copy the receiver link for {{.Label}}">Copy</button>
       </div>
-      <p class="muted">Use Opus audio for browser playback. AAC needs an AAC-capable WHEP receiver.</p>
+      <p class="muted">Paste into an OBS Browser Source. Use Opus audio; AAC needs a compatible WHEP receiver.</p>
+      <details class="camera-help">
+        <summary>OBS audio and scene settings</summary>
+        <p class="muted">Enable <strong>Control audio via OBS</strong> and disable
+          <strong>Shutdown source when not visible</strong> to keep the connection between scenes.</p>
+      </details>
     </div>
 
     <div class="field">
-      <label for="delay-{{.ID}}">
-        Delay <output data-delay-out>{{.DelayMS}}</output> ms. Minimum {{$.Floor}}
-        {{if ne .Effective .DelayMS}}
-          <span class="pill">playing out at {{.Effective}} ms for group {{.SyncGroup}}</span>
-        {{end}}
+      <label for="delay-{{.ID}}" class="delay-label">
+        <span>Delay</span><span><output data-delay-out>{{.DelayMS}}</output> ms</span>
       </label>
       <div class="row">
         <input type="range" id="delay-{{.ID}}" min="{{$.Floor}}" max="10000" step="100"
                value="{{.DelayMS}}" data-delay="{{.ID}}">
       </div>
-      <p class="muted">Two seconds of buffer is what keeps OBS fed through a dropout.</p>
+      <p class="muted">{{$.Floor}}–10000 ms · New cameras start at 2000 ms. More buffer helps with unstable connections.</p>
+      {{if ne .Effective .DelayMS}}
+        <p class="muted">Group {{.SyncGroup}} plays at {{.Effective}} ms.</p>
+      {{end}}
     </div>
 
     <fieldset class="field codecs" data-codecs="{{.ID}}">
-      <legend>Video codecs offered to the phone</legend>
+      <legend>Video codecs</legend>
+      <div class="codec-options">
       {{range .Codecs}}
         <label class="codec">
           <input type="checkbox" value="{{.Name}}" {{if .On}}checked{{end}}>
           <span>{{.Label}}</span>
-          {{if .Caveat}}<small>{{.Caveat}}</small>{{end}}
         </label>
       {{end}}
-      <p class="muted">Changing this disconnects the camera; the set is chosen when it connects.</p>
+      </div>
+      <p class="muted">Changing codecs reconnects the camera.</p>
+      <details class="camera-help">
+        <summary>H.265 and AV1 compatibility</summary>
+        {{range .Codecs}}{{if .Caveat}}<p class="muted"><strong>{{.Label}}:</strong> {{.Caveat}}</p>{{end}}{{end}}
+      </details>
     </fieldset>
 
-    <div class="field">
-      <label for="group-{{.ID}}">Sync group. Cameras sharing a name play out together</label>
+    <details class="field camera-help sync-group" {{if .SyncGroup}}open{{end}}>
+      <summary>Sync group <span class="muted">(optional)</span></summary>
+      <label class="sr-only" for="group-{{.ID}}">Sync group name</label>
       <div class="row">
         <input type="text" id="group-{{.ID}}" value="{{.SyncGroup}}" maxlength="32"
-               placeholder="none" data-group="{{.ID}}">
-        <span class="muted">Leave empty unless two cameras appear on screen at once.
-        Grouped cameras all wait for the slowest.</span>
+               placeholder="Group name" data-group="{{.ID}}">
       </div>
-      <p class="muted">
-        In the Browser Source, tick <strong>Control audio via OBS</strong> or the sound goes to your
-        desktop instead of the mixer, and untick <strong>Shutdown source when not visible</strong> so
-        scene cuts do not reconnect the stream.
-      </p>
-    </div>
+      <p class="muted">Same group, same delay. Leave empty for one camera.</p>
+    </details>
+    </details>
   </section>
   {{end}}
 

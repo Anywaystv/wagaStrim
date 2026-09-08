@@ -103,9 +103,7 @@ func TestReplaceRefusesAListItCannotResolve(t *testing.T) {
 	assert.Empty(t, cfg.List(), "a refused list must not have been half applied")
 }
 
-// The floor is the product for a phone on cellular. A deployment whose camera
-// and player sit in one rack has a different worst case and may lower it, all
-// the way to nothing.
+// Explicit deployment minima still apply; the default permits zero delay.
 func TestALoweredFloorIsHonoredAllTheWayToZero(t *testing.T) {
 	cfg := &Config{FloorMS: new(300), Ingests: []Ingest{{DelayMS: 300}, {DelayMS: 120}}}
 	cfg.normalise()
@@ -115,10 +113,9 @@ func TestALoweredFloorIsHonoredAllTheWayToZero(t *testing.T) {
 
 	absent := &Config{Ingests: []Ingest{{DelayMS: 300}}}
 	absent.normalise()
-	assert.Equal(t, DelayFloorMS, absent.Ingests[0].DelayMS, "saying nothing means the product floor")
+	assert.Equal(t, 300, absent.Ingests[0].DelayMS, "an omitted floor preserves valid delays")
 
-	// Zero is the setting a wired deployment actually wants, and it is the one
-	// value a plain int could not tell apart from having said nothing at all.
+	// An explicit zero minimum has the same behavior as an omitted minimum.
 	none := &Config{FloorMS: new(0), Ingests: []Ingest{{DelayMS: 0}, {DelayMS: 40}}}
 	none.normalise()
 	assert.Equal(t, 0, none.Ingests[0].DelayMS, "a stated zero floor must pass a zero delay through")
