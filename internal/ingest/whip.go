@@ -204,6 +204,22 @@ func registerCodecs(media *webrtc.MediaEngine, codecs []string) error {
 		return fmt.Errorf("%w: opus: %w", ErrBuildAPI, err)
 	}
 
+	// The sender chooses the audio codec in its offer; accepting AAC does not
+	// change an Opus publisher or add a decoder to the relay.
+	aac := webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{
+			MimeType:  "audio/MPEG4-GENERIC",
+			ClockRate: 48000,
+			Channels:  2,
+			SDPFmtpLine: "streamtype=5;profile-level-id=1;mode=AAC-hbr;config=1190;" +
+				"sizelength=13;indexlength=3;indexdeltalength=3",
+		},
+		PayloadType: 112,
+	}
+	if err := media.RegisterCodec(aac, webrtc.RTPCodecTypeAudio); err != nil {
+		return fmt.Errorf("%w: aac: %w", ErrBuildAPI, err)
+	}
+
 	return nil
 }
 

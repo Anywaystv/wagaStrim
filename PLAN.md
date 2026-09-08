@@ -173,6 +173,14 @@ it, not to split it reflexively.
 on the MediaEngine; the toggles decide which get offered. There is no transcoding anywhere in the
 pipeline: the phone encodes, we forward bytes.
 
+Audio is negotiated automatically from the publisher's offer: Opus or experimental AAC
+transport (`MPEG4-GENERIC`, AAC-hbr, 48 kHz stereo). No receiver config toggle is needed. The tested
+sender uses AAC-LC with AudioSpecificConfig `1190` and 13/3/3 AU headers. WagaStrim forwards
+the encoded audio without decoding or converting it; no FFmpeg dependency is added.
+An AAC publisher requires an AAC-capable WHEP receiver. Keep Opus selected for the built-in
+player and OBS Browser Source. AAC-to-Opus conversion for the hosted dashboard belongs to
+the compositor deployment and is not implemented by this transport option.
+
 A codec has to clear both ends, and the two ends fail differently:
 
 | Codec | Sender | Receiver (Browser Source) |
