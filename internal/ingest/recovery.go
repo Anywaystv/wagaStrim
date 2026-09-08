@@ -13,6 +13,7 @@ import (
 	"github.com/pion/stun/v3"
 	"github.com/pion/transport/v4"
 	"github.com/pion/transport/v4/stdnet"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -119,6 +120,7 @@ type recoveryState struct {
 	groupOrder   []recoveryGroupID
 	groupHead    int
 	packetsSince uint64
+	work         *rate.Limiter
 }
 
 func newRecoveryConn(conn transport.UDPConn, log logging.LeveledLogger) *recoveryConn {
@@ -134,6 +136,7 @@ func newRecoveryState() *recoveryState {
 		packets: make(map[recoveryPacketID][]byte),
 		streams: make(map[recoveryStreamID]*recoveryStream),
 		groups:  make(map[recoveryGroupID]recoveryGroup),
+		work:    rate.NewLimiter(262144, 65536),
 	}
 }
 
@@ -149,6 +152,9 @@ func (c *recoveryConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 		}
 
 		if hasRecoveryMagic(buffer[:read]) {
+			if !c.authenticated(remote) {
+				continue
+			}
 			if datagram, ok := c.consumeParity(buffer[:read], remote); ok {
 				return copy(buffer, datagram.data), datagram.addr, nil
 			}
@@ -163,6 +169,9 @@ func (c *recoveryConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 			return read, remote, nil
 		}
 
+		if !c.authenticated(remote) {
+			return read, remote, nil
+		}
 		id.remote = c.identity(remote)
 		request := c.remember(id, buffer[:read], remote)
 		if len(request) > 0 {
@@ -171,6 +180,15 @@ func (c *recoveryConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 
 		return read, remote, nil
 	}
+}
+
+// Only Pion's authenticated binding success grants recovery access. Unknown
+// RTP still reaches Pion, without allocating recovery history first.
+func (c *recoveryConn) authenticated(remote net.Addr) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.identities[remote.String()] != ""
 }
 
 func (c *recoveryConn) popReady() (recoveredDatagram, bool) {
@@ -191,6 +209,16 @@ func (c *recoveryConn) popReady() (recoveredDatagram, bool) {
 func (c *recoveryConn) remember(id recoveryPacketID, data []byte, remote net.Addr) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	cost := 1
+	if stream := c.streams[recoveryStreamID{remote: id.remote, ssrc: id.ssrc}]; stream != nil {
+		delta := id.sequenceNumber - stream.highest
+		if delta < 0x8000 {
+			cost += min(int(delta), recoveryHistorySize)
+		}
+	}
+	if !c.allowRecovery(data, cost) {
+		return nil
+	}
 
 	c.storePacketLocked(id, data)
 	now := time.Now()
@@ -211,7 +239,16 @@ func (c *recoveryConn) remember(id recoveryPacketID, data []byte, remote net.Add
 	return makeRecoveryRequest(id.ssrc, dueRepairs(stream, now))
 }
 
+// Budget charges sequence gaps by their allocation cost. Oversized datagrams
+// and exhausted budgets bypass custom recovery; ordinary media still reaches Pion.
+func (c *recoveryConn) allowRecovery(data []byte, cost int) bool {
+	return len(data) <= 8192 && c.work.AllowN(time.Now(), cost)
+}
+
 func (c *recoveryConn) consumeParity(data []byte, remote net.Addr) (recoveredDatagram, bool) {
+	if !c.allowRecovery(data, 32) {
+		return recoveredDatagram{}, false
+	}
 	group, id, ok := parseRecoveryGroup(data, remote)
 	if !ok {
 		return recoveredDatagram{}, false
@@ -458,6 +495,10 @@ func (c *recoveryConn) observeBinding(data []byte, remote net.Addr, outgoing boo
 func (c *recoveryConn) rememberBindingLocked(key recoveryBindingID, message *stun.Message) {
 	var username stun.Username
 	if err := username.GetFrom(message); err != nil {
+		return
+	}
+	// ICE usernames contain two ufrags of at most 256 bytes plus a colon.
+	if len(username) > 513 {
 		return
 	}
 	if c.pendingBindings == nil {
