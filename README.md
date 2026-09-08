@@ -61,13 +61,15 @@ manager, then restart. Or set a password-manager-generated secret of at least
 {
   "controlToken": "REPLACE_WITH_YOUR_RANDOM_SECRET",
   "controlLan": true,
-  "controlRemote": false
+  "controlRemote": true
 }
 ```
 
 The connecting app sends the same secret as `Authorization: Bearer YOUR_SECRET`
 to the control API on TCP 7333. This is separate from the camera's stream key;
 Moblin does not need it. Without `controlToken`, the control API stays off.
+With a token, remote dashboards are allowed by default. Set `controlRemote: false`
+to refuse internet clients. Restrict TCP 7333 by firewall and use HTTPS or a VPN.
 
 The **Local access** and **Remote access** dashboard toggles apply immediately.
 Both off means this machine only. They do not change streaming/preview access or

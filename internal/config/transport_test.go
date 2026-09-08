@@ -45,6 +45,30 @@ func TestOptionalHTTPSLinks(t *testing.T) {
 	require.Equal(t, "https://stream.example.com/player/", receiver)
 }
 
+func TestRemoteControlDefaultsAndExplicitOptOut(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		on   bool
+	}{
+		{`{}`, false},
+		{`{"controlToken":"hosted-token"}`, true},
+		{`{"controlToken":"hosted-token","controlRemote":false}`, false},
+		{`{"controlToken":"hosted-token","controlRemote":true}`, true},
+	} {
+		var cfg Config
+		require.NoError(t, json.Unmarshal([]byte(tc.body), &cfg))
+		require.Equal(t, tc.on, cfg.RemoteControlEnabled())
+	}
+	cfg := &Config{path: t.TempDir() + "/config.json", ControlToken: "hosted-token"}
+	require.NoError(t, cfg.SetControlAccess("remote", false))
+	raw, err := os.ReadFile(cfg.path)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"controlRemote": false`)
+	var saved Config
+	require.NoError(t, json.Unmarshal(raw, &saved))
+	require.False(t, saved.RemoteControlEnabled())
+}
+
 func TestTransportRejectsIncompleteTLSAndUnsafePublicURL(t *testing.T) {
 	require.Error(t, (&Config{TLSCert: "cert.pem"}).ValidateTransport())
 	for _, origin := range []string{

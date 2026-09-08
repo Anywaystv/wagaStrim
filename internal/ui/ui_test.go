@@ -67,7 +67,7 @@ func TestTokenBootstrapDoesNotClaimSuccessOnSaveFailure(t *testing.T) {
 func TestLANControlToggleRendersSavedState(t *testing.T) {
 	for _, on := range []bool{true, false} {
 		cfg := &config.Config{UIPort: testPort, ControlToken: "configured", ControlLAN: &on}
-		cfg.ControlRemote = on
+		cfg.ControlRemote = &on
 		log := logging.NewDefaultLoggerFactory().NewLogger("test")
 		srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
 		require.NoError(t, err)

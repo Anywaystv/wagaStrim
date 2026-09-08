@@ -43,11 +43,16 @@ removing other settings, then restart:</p>
 <pre><code>{
   "publicHost": "192.168.1.50",
   "controlLan": true,
-  "controlRemote": false
+  "controlRemote": true
 }</code></pre>
 <p>Set <code>publicHost</code> to your server's reachable IP or hostname.
 Without it, links use localhost. The Local/Remote toggles allow API clients;
 they do not open firewall ports or change camera access.</p>
+<p>A configured token allows remote dashboards by default. Set <code>controlRemote</code>
+to <code>false</code> to block internet clients; restrict TCP 7333 by firewall.</p>
+<details><summary>Upgrading an earlier test build</summary>
+<p>Earlier builds could omit a saved <code>false</code> value. To keep remote access
+off, explicitly set <code>"controlRemote": false</code> before upgrading.</p></details>
 <p><strong>Ports:</strong> TCP 7333 API, TCP 7331 signaling, UDP 7332 media.
 TCP 7330 Setup stays local (use an SSH tunnel for a remote server).
 Cellular streaming needs reachable public media/signaling ports.</p>

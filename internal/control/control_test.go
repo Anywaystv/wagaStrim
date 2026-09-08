@@ -20,7 +20,29 @@ const (
 	token        = "a-provisioned-token"
 	loopbackPeer = "127.0.0.1:1234"
 	lanPeer      = "192.168.68.10:1234"
+	publicPeer   = "203.0.113.20:1234"
+	wrongToken   = "wrong"
 )
+
+func TestHostedTokenAllowsRemoteControlWithoutExtraConfiguration(t *testing.T) {
+	srv, cfg, _ := testServer(t)
+	require.Nil(t, cfg.ControlRemote)
+	for _, credential := range []string{"", wrongToken, token} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPut,
+			"/control/ingests", strings.NewReader(list("a")))
+		req.RemoteAddr = publicPeer
+		req.Header.Set("Authorization", "Bearer "+credential)
+		res := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(res, req)
+		if credential == token {
+			require.Equal(t, http.StatusNoContent, res.Code)
+			require.Len(t, cfg.List(), 1)
+		} else {
+			require.Equal(t, http.StatusNotFound, res.Code)
+			require.Empty(t, cfg.List())
+		}
+	}
+}
 
 func TestLANControlToggleAppliesWithoutRestart(t *testing.T) {
 	srv, cfg, _ := testServer(t)
@@ -44,11 +66,12 @@ func TestLANControlToggleAppliesWithoutRestart(t *testing.T) {
 func TestRemoteToggleRequiresTokenAndDoesNotEnableLAN(t *testing.T) {
 	srv, cfg, _ := testServer(t)
 	require.NoError(t, cfg.SetLANControl(false))
+	require.NoError(t, cfg.SetControlAccess("remote", false))
 	require.False(t, cfg.RemoteControlEnabled())
 	for _, on := range []bool{false, true, false} {
 		require.NoError(t, cfg.SetControlAccess("remote", on))
-		for _, peer := range []string{"203.0.113.20:1234", "[2001:db8::2]:1234", lanPeer} {
-			for _, credential := range []string{token, "wrong"} {
+		for _, peer := range []string{publicPeer, "[2001:db8::2]:1234", lanPeer} {
+			for _, credential := range []string{token, wrongToken} {
 				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/control/stats", nil)
 				req.RemoteAddr = peer
 				req.Header.Set("Authorization", "Bearer "+credential)
@@ -75,12 +98,13 @@ func TestControlAllowsPrivatePeersAndRejectsPublicPeers(t *testing.T) {
 		{"[::1]:1234", true},
 		{"[fd00::2]:1234", true},
 		{"[::ffff:192.168.68.20]:1234", true},
-		{"203.0.113.20:1234", false},
+		{publicPeer, false},
 		{"[2001:db8::2]:1234", false},
 		{"invalid", false},
 	} {
 		t.Run(peer.address, func(t *testing.T) {
-			srv, _, _ := testServer(t)
+			srv, cfg, _ := testServer(t)
+			require.NoError(t, cfg.SetControlAccess("remote", false))
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/control/stats", nil)
 			req.RemoteAddr = peer.address
 			req.Header.Set("Authorization", "Bearer "+token)

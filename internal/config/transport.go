@@ -25,7 +25,12 @@ func (c *Config) RemoteControlEnabled() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return c.ControlRemote
+	if c.ControlRemote != nil {
+		return *c.ControlRemote
+	}
+
+	// Existing hosted deployments configure only a token and rely on remote control.
+	return c.ControlToken != ""
 }
 
 func (c *Config) SetControlAccess(scope string, on bool) error {
@@ -36,7 +41,7 @@ func (c *Config) SetControlAccess(scope string, on bool) error {
 	case "lan":
 		c.ControlLAN = &on
 	case "remote":
-		c.ControlRemote = on
+		c.ControlRemote = &on
 	default:
 		return fmt.Errorf("%w: unknown control access option", ErrParseConfig)
 	}

@@ -51,8 +51,7 @@
       <input type="checkbox" id="control-remote" {{if .RemoteControl}}checked{{end}} {{if not .ControlAvailable}}disabled{{end}}>
       <span>Remote access — internet connections</span>
     </label>
-    <p class="muted">Off by default. Requires the control token and a reachable control port.
-      Use HTTPS to protect the token over the internet. This does not open router or firewall ports.</p>
+    <p class="muted">Enabled by default with a control token. Use HTTPS or a VPN and restrict the control port by firewall.</p>
     <p class="muted" id="control-remote-note" role="status" aria-live="polite"></p>
   </section>
 

@@ -95,7 +95,7 @@ type Config struct {
 	SignalBind    string `json:"signalBind,omitempty"`
 	ControlBind   string `json:"controlBind,omitempty"`
 	ControlLAN    *bool  `json:"controlLan,omitempty"`
-	ControlRemote bool   `json:"controlRemote,omitempty"`
+	ControlRemote *bool  `json:"controlRemote,omitempty"`
 	TLSCert       string `json:"tlsCert,omitempty"`
 	TLSKey        string `json:"tlsKey,omitempty"`
 	// PublicURL is the HTTPS origin of a local reverse proxy.

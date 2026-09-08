@@ -96,7 +96,7 @@ func TestResetKeyRequiresAuthenticationAndRevokesSessions(t *testing.T) {
 	before, err := cfg.AddIngest("Phone")
 	require.NoError(t, err)
 	path := "/control/ingests/" + before.ID + "/reset-key"
-	for _, credential := range []string{"wrong", token} {
+	for _, credential := range []string{wrongToken, token} {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, nil)
 		req.RemoteAddr = loopbackPeer
 		req.Header.Set("Authorization", "Bearer "+credential)
