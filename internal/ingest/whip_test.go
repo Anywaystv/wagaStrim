@@ -122,6 +122,31 @@ func TestPublisherMediaReachesTheIngest(t *testing.T) {
 	assert.False(t, still, "teardown must forget the session")
 }
 
+func TestPublisherOpusInBandFECIsPreservedInAnswer(t *testing.T) {
+	srv, ing := newTestServer(t)
+
+	peer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = peer.Close() })
+
+	track, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
+		"audio", "synthetic")
+	require.NoError(t, err)
+
+	_, err = peer.AddTrack(track)
+	require.NoError(t, err)
+
+	offer := offerFrom(t, peer)
+	require.Contains(t, offer, "useinbandfec=1", "the publisher fixture must ask for in-band FEC")
+
+	answer, resource, err := srv.Publish(ing.SenderKey, offer)
+	require.NoError(t, err)
+	assert.Contains(t, answer, "useinbandfec=1", "the WHIP answer must preserve the publisher's FEC setting")
+
+	require.NoError(t, srv.Teardown(resource))
+}
+
 func TestReceiverKeyAtWhipIsRefused(t *testing.T) {
 	srv, ing := newTestServer(t)
 	peer, _ := publisher(t)

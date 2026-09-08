@@ -43,6 +43,11 @@ func NewSettingEngine(mediaPort int, publicIPs ...string) (*webrtc.SettingEngine
 		// so a receiver on this same machine has no candidate it can reach.
 		ice.UDPMuxFromPortWithLoopback(),
 	}
+	recoveryNetwork, err := newRecoveryNet()
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: recovery network: %w", ErrBuildAPI, err)
+	}
+	muxOptions = append(muxOptions, ice.UDPMuxFromPortWithNet(recoveryNetwork))
 	mux, err := ice.NewMultiUDPMuxFromPort(mediaPort, muxOptions...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: udp mux on %d: %w", ErrBuildAPI, mediaPort, err)
