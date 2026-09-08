@@ -288,14 +288,16 @@ func (c *recoveryConn) trackGapLocked(id recoveryPacketID, stream *recoveryStrea
 	if delta == 0 || delta >= 0x8000 {
 		return
 	}
-	if delta > 64 {
-		stream.highest = sequenceNumber
-		clear(stream.missing)
-
-		return
+	// Only request packets the sender can still retain, even after a long outage.
+	start := uint16(max(1, int(delta)-recoveryHistorySize+1))
+	if delta > 1 {
+		for missing := range stream.missing {
+			if sequenceNumber-missing >= recoveryHistorySize {
+				delete(stream.missing, missing)
+			}
+		}
 	}
-
-	for offset := uint16(1); offset < delta; offset++ {
+	for offset := start; offset < delta; offset++ {
 		missing := stream.highest + offset
 		if _, exists := c.packets[recoveryPacketID{
 			remote: id.remote, ssrc: id.ssrc, sequenceNumber: missing,

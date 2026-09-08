@@ -101,6 +101,7 @@ func run(headless bool, log logging.LeveledLogger) error {
 	defer stop()
 
 	errs := make(chan error, 3)
+	listeners := 2
 
 	go func() { errs <- srv.Serve(ctx) }()
 	go func() { errs <- public.Serve(ctx) }()
@@ -108,10 +109,14 @@ func run(headless bool, log logging.LeveledLogger) error {
 	// Only where a deployment configured a token. A desktop install has no
 	// second machine that owns its cameras, so it never opens this port.
 	if cfg.ControlToken != "" {
+		listeners++
 		control := control.New(cfg, log, counters, revoke)
 
 		go func() { errs <- control.Serve(ctx) }()
 	}
+
+	finished := make(chan error, 1)
+	go func() { finished <- waitListeners(errs, listeners, stop) }()
 
 	log.Infof("media on udp/%d, forward it along with tcp/%d", cfg.MediaPort, cfg.SignalPort)
 
@@ -119,12 +124,27 @@ func run(headless bool, log logging.LeveledLogger) error {
 		log.Infof("headless; open %s", srv.Addr())
 		<-ctx.Done()
 
-		return <-errs
+		return <-finished
 	}
 
 	// systray must own the main thread on macOS, so the UI runs in the goroutine
 	// above and this call blocks here until the icon is dismissed.
 	tray.Run(ctx, srv.Addr(), log, stop)
 
-	return <-errs
+	return <-finished
+}
+
+// Cancel sibling listeners on failure and drain all results before closing media.
+func waitListeners(errs <-chan error, count int, stop context.CancelFunc) error {
+	var first error
+	for range count {
+		if err := <-errs; err != nil {
+			if first == nil {
+				first = err
+			}
+			stop()
+		}
+	}
+
+	return first
 }

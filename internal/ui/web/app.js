@@ -135,6 +135,9 @@ async function poll() {
   // one stream. No invented capacity model: the number is shown, not judged.
   const live = Object.values(all).filter((s) => s.live);
   const total = live.reduce((sum, s) => sum + s.bitrateKbps, 0);
+  const mediaStatus = document.getElementById("media-status");
+  mediaStatus.textContent = live.length ? "live" : "no media";
+  mediaStatus.className = "status-button " + (live.length ? "good" : "warn");
   document.getElementById("total").textContent = live.length
     ? `${live.length} streaming, ${(total / 1000).toFixed(1)} Mbps total`
     : "No cameras streaming.";

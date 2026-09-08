@@ -166,6 +166,24 @@ func TestRecoveryParityRebuildsOneMissingPacket(t *testing.T) {
 	assert.Equal(t, packets[3], rebuilt)
 }
 
+func TestRecoveryTracksBurstLossWithinHistory(t *testing.T) {
+	for _, start := range []uint16{100, 65500} {
+		conn, sender := recoverySocketPair(t)
+		remote := conn.identity(sender.LocalAddr())
+		stream := &recoveryStream{missing: map[uint16]time.Time{}, enabled: true}
+		for _, offset := range []uint16{0, 2, 102} {
+			conn.trackGapLocked(recoveryPacketID{remote: remote, ssrc: 1, sequenceNumber: start + offset}, stream)
+		}
+		require.Len(t, stream.missing, 100)
+		assert.Contains(t, stream.missing, start+1)
+		assert.Contains(t, stream.missing, start+101)
+		conn.trackGapLocked(recoveryPacketID{remote: remote, ssrc: 1, sequenceNumber: start + 10000}, stream)
+		require.Len(t, stream.missing, recoveryHistorySize-1)
+		assert.NotContains(t, stream.missing, start+1)
+		assert.Contains(t, stream.missing, start+9999)
+	}
+}
+
 func TestRecoveryRequestsEveryMissingPacket(t *testing.T) {
 	receiver, sender := recoverySocketPair(t)
 	packets := make([][]byte, 8)
