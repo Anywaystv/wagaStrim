@@ -45,49 +45,54 @@ The settings page on TCP 7330 stays local; do not forward it. **Check** finds
 addresses but cannot confirm port forwarding. Test with phone Wi-Fi turned off.
 Keep your stream keys and public IP off your broadcast.
 
-## Optional HTTPS
+## Configure `config.json`
 
-HTTP remains the default. It sends stream keys without encryption; use HTTPS
-for public internet connections, or carry HTTP through an encrypted VPN.
+Start WagaStrim once to create the file; its path appears in the startup log.
+Stop WagaStrim before editing. Merge the fields below into the existing JSON
+object, keeping your other settings and `ingests`. Save and restart to apply edits.
 
-To enable HTTPS, stop WagaStrim and edit the `config.json` file shown in its
-startup log. Add `tlsCert` and `tlsKey` with the paths to your certificate chain
-and private key, and set `publicHost` to the hostname covered by the certificate:
+### Control access (optional)
+
+Generate a random password of at least 32 characters with a password manager.
+Replace the placeholder with that secret:
 
 ```json
-"publicHost": "stream.example.com",
-"tlsCert": "/path/to/fullchain.pem",
-"tlsKey": "/path/to/privkey.pem"
+{
+  "controlToken": "REPLACE_WITH_YOUR_RANDOM_SECRET",
+  "controlLan": true,
+  "controlRemote": false
+}
 ```
 
-Restart WagaStrim. The sender link changes to `whips://` and the receiver link to
-`https://`, on the same signaling port. Other WHIP clients use `https://`.
-Use a certificate trusted by the phone and browser. Remove both TLS fields to
-return to HTTP. Restart after certificate renewal to load the new files.
+The connecting app sends the same secret as `Authorization: Bearer YOUR_SECRET`
+to the control API on TCP 7333. This is separate from the camera's stream key;
+Moblin does not need it. Without `controlToken`, the control API stays off.
 
-If a local reverse proxy handles HTTPS, leave those TLS fields unset and add
-`"signalBind": "127.0.0.1"` and `"publicUrl": "https://stream.example.com"`.
-The proxy must reach WagaStrim locally; forwarding headers never grant trust.
-For a VPN, `signalBind` can instead be the machine's VPN IP.
+The **Local access** and **Remote access** dashboard toggles apply immediately.
+Both off means this machine only. They do not change streaming/preview access or
+open firewall/router ports. Set `controlBind` to a LAN or VPN IP to restrict the
+listener. The settings webpage remains local on TCP 7330.
 
-The optional control API accepts token-authenticated connections from local
-Wi-Fi, private VPN addresses and loopback. Public source addresses are rejected
-unless **Remote access** is enabled in the dashboard.
-Connect to the server's LAN IP on TCP 7333; allow that port from your LAN in the
-host firewall. Set `controlBind` to a particular LAN or VPN IP to restrict its
-listener further. Direct TLS also applies to this API. Forward this port only
-when deliberately enabling remote control. The settings page on TCP 7330 remains local.
-The dashboard's **Local network access** toggle enables or disables LAN/VPN
-control requests immediately and saves the choice. It requires a configured
-control token and does not change camera ingest or preview access.
-**Remote access** is a separate toggle, off by default, saved as `controlRemote`.
-It permits token-authenticated internet control requests immediately. Use HTTPS
-for remote control; the toggle does not configure certificates, bind addresses,
-router forwarding or host firewall rules. Turning both access toggles off keeps
-control requests local to this machine.
+### HTTPS (optional)
 
-HTTP requests have time and rate limits. WHEP allows up to 8 subscribers per
-camera and 64 overall, counting negotiations; unfinished connections expire.
+HTTP is the default and exposes keys/tokens to anyone observing the connection.
+For HTTPS, add these fields using your hostname and trusted certificate files:
+
+```json
+{
+  "publicHost": "stream.example.com",
+  "tlsCert": "/path/to/fullchain.pem",
+  "tlsKey": "/path/to/privkey.pem"
+}
+```
+
+Restart. Moblin links use `whips://`; receiver links and other WHIP clients use
+`https://`. Ports stay the same; TLS also covers the control API. Restart after
+certificate renewal. Remove both TLS fields to return to HTTP.
+
+For a local HTTPS reverse proxy, omit the TLS fields and set `signalBind` to
+`127.0.0.1` and `publicUrl` to `https://stream.example.com`. Use HTTPS or an
+encrypted VPN for internet access.
 
 ## Compatibility
 
