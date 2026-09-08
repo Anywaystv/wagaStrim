@@ -73,7 +73,7 @@ func run(headless bool, log logging.LeveledLogger) error {
 		return err
 	}
 
-	engine, mux, err := ingest.NewSettingEngine(cfg.MediaPort)
+	engine, mux, err := ingest.NewSettingEngine(cfg.MediaPort, cfg.ICEPublicIPs...)
 	if err != nil {
 		return err
 	}

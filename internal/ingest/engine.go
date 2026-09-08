@@ -5,6 +5,8 @@ package ingest
 
 import (
 	"fmt"
+	"net"
+	"strings"
 
 	"github.com/pion/dtls/v3"
 	"github.com/pion/ice/v4"
@@ -24,20 +26,45 @@ const socketBuffer = 8 << 20
 const replayWindow = 4096
 
 // NewSettingEngine builds the shared ICE and DTLS configuration.
-func NewSettingEngine(mediaPort int) (*webrtc.SettingEngine, *ice.MultiUDPMuxDefault, error) {
-	mux, err := ice.NewMultiUDPMuxFromPort(mediaPort,
+func NewSettingEngine(mediaPort int, publicIPs ...string) (*webrtc.SettingEngine, *ice.MultiUDPMuxDefault, error) {
+	externalIPs, err := publicICEAddresses(publicIPs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	muxOptions := []ice.UDPMuxFromPortOption{
 		ice.UDPMuxFromPortWithReadBufferSize(socketBuffer),
 		ice.UDPMuxFromPortWithWriteBufferSize(socketBuffer),
 		ice.UDPMuxFromPortWithNetworks(ice.NetworkTypeUDP4, ice.NetworkTypeUDP6),
+		ice.UDPMuxFromPortWithIPFilter(func(ip net.IP) bool {
+			return !ip.IsLinkLocalUnicast()
+		}),
 		// Off by default in pion. Without it the mux binds the LAN address only,
 		// so a receiver on this same machine has no candidate it can reach.
 		ice.UDPMuxFromPortWithLoopback(),
-	)
+	}
+	mux, err := ice.NewMultiUDPMuxFromPort(mediaPort, muxOptions...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: udp mux on %d: %w", ErrBuildAPI, mediaPort, err)
 	}
 
 	engine := &webrtc.SettingEngine{}
+	if len(externalIPs) > 0 {
+		// Append the public address instead of replacing the local candidates.
+		// A compositor beside wagaStrim uses its Docker or LAN candidate, while
+		// remote publishers and viewers use the forwarded public candidate.
+		// The shared mux receives on wildcard sockets, so candidate rewriting
+		// observes 0.0.0.0/:: rather than an individual interface address. Use a
+		// family-wide append rule while continuing to accept legacy external/local
+		// configuration values above.
+		if err := engine.SetICEAddressRewriteRules(webrtc.ICEAddressRewriteRule{
+			External:        externalIPs,
+			AsCandidateType: webrtc.ICECandidateTypeSrflx,
+			Mode:            webrtc.ICEAddressRewriteAppend,
+		}); err != nil {
+			return nil, nil, fmt.Errorf("%w: public ICE address: %w", ErrBuildAPI, err)
+		}
+	}
 
 	// One forwarded UDP port for every ingest and every session. Allocating a
 	// port per ingest would turn "forward two ports" into "forward one per
@@ -65,4 +92,21 @@ func NewSettingEngine(mediaPort int) (*webrtc.SettingEngine, *ice.MultiUDPMuxDef
 	)
 
 	return engine, mux, nil
+}
+
+func publicICEAddresses(mappings []string) ([]string, error) {
+	externalIPs := make([]string, 0, len(mappings))
+	for _, mapping := range mappings {
+		parts := strings.Split(mapping, "/")
+		valid := len(parts) >= 1 && len(parts) <= 2
+		for _, part := range parts {
+			valid = valid && net.ParseIP(strings.TrimSpace(part)) != nil
+		}
+		if !valid {
+			return nil, fmt.Errorf("%w: invalid public ICE IP mapping %q", ErrBuildAPI, mapping)
+		}
+		externalIPs = append(externalIPs, strings.TrimSpace(parts[0]))
+	}
+
+	return externalIPs, nil
 }
