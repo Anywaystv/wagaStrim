@@ -246,29 +246,30 @@ a skip. Below target, hold and refill; never drain below the floor. Log every co
 stream corrects repeatedly, say so in the UI, because it means the target is too low for that
 connection.
 
-**Loss handling on ingest** is NACK plus the buffer above. Not RTX: `videoCodecs` registers H.264,
-H.265 and AV1 and no `MimeTypeRTX` alongside them, so RFC 4588 is never negotiated and a NACK is
-answered on the original SSRC. This line said "NACK and RTX" until 2026-08-30 and was wrong.
+**Loss handling on ingest** is WebRTC NACK plus the buffer above, with an additional recovery layer
+for the custom bonded Waga sender. The sender retains one shared 4096-packet encrypted RTP history
+across all paths. Wagastrim requests missing packets from that history and the sender retransmits
+them over whichever validated path is healthiest at request time. This covers audio as well as
+video and does not depend on WebRTC negotiating RTX.
 
-Not FEC either, on video, for two reasons and not one. Moblin does not send FlexFEC, and
-`pion/interceptor/pkg/flexfec` has no decoder interceptor to read it with if it did. The reason
-that would survive both being fixed is the trade: FEC spends bandwidth on every packet whether or
-not anything was lost, while a NACK spends it only on loss, and the delay floor is far more time
-than a retransmission needs on any link where the phone is reachable at all. FEC earns its place
-where there is no time to ask again. Revisit only if we ship our own sender, or for a one-way link.
+The bonded sender also emits XOR parity for each group of eight encrypted RTP packets. Wagastrim
+can reconstruct one missing packet per group from later parity without a repair round trip. More
+than one loss in a group falls back to the shared-history request. This is packet-level FEC below
+SRTP, not FlexFEC: the reconstructed ciphertext still passes through SRTP authentication before it
+is accepted. It costs about 12.5% media overhead. Standard WHIP senders remain unchanged. This
+earlier design deferred FEC until the project shipped its own sender; WagaWebRTC is now that sender.
 
-**Audio recovers by in-band FEC, and we neither enable nor can enable it.** Opus LBRR carries a
-low-rate copy of the previous frame inside the next packet, which is the right mechanism for audio
-because NACK is not negotiated for it and a retransmission would miss its playout slot anyway.
-It is switched on by `useinbandfec=1` in the fmtp, and the publisher sees that parameter in our
-answer, but the value is the one it offered: pion builds an answer's fmtp from the offer, not from
-the registered codec, and wagaStrim never creates an offer. Measured on the real `Publish` path on
+**Audio has two possible recovery layers.** The Waga packet layer above covers encrypted Opus RTP
+with the same parity and shared history as video. Opus LBRR can independently carry a low-rate copy
+of the previous frame inside the next packet, but SDP alone cannot turn it on in an encoder.
+`useinbandfec=1` in the fmtp only tells the publisher that the receiver supports it. Pion builds an
+answer's fmtp from the offer, not from the registered codec, and wagaStrim never creates an offer.
+Measured on the real `Publish` path on
 2026-08-30, an offer with no fmtp is answered with no fmtp and an offer carrying
-`minptime=10;useinbandfec=1` is answered with it unchanged, whatever this side registers. Moblin
-and OBS both offer it, so LBRR is on, and the relay forwards Opus payloads opaquely so the
-redundancy rides through untouched. Nothing to do, and nothing that can be done from here: the
-Opus registration in `registerCodecs` is inert on this path, and adding a parameter to it would
-change the wire not at all.
+`minptime=10;useinbandfec=1` is answered with it unchanged, whatever this side registers. The relay
+forwards Opus payloads opaquely, so any LBRR an encoder produces rides through untouched. Enabling
+LBRR itself remains a sender-encoder responsibility; the Opus registration in `registerCodecs`
+cannot change it.
 
 DRED is the successor to that mechanism and is not an option. It is still an IETF draft
 (`draft-ietf-mlcodec-opus-dred`), shipped Chromium negotiates plain RFC 2198 RED behind a field
