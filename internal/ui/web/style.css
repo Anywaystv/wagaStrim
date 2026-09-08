@@ -37,7 +37,7 @@ header {
 }
 .wordmark { font-weight: 750; letter-spacing: -.02em }
 .wordmark span { color: var(--muted); font-weight: 520 }
-.header-end { margin-left: auto; display: flex; align-items: center; gap: .65rem }
+.header-end { margin-left: auto; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .65rem }
 main { max-width: var(--column); margin: 0 auto; padding: var(--column-pad) }
 h2 { display: flex; align-items: center; margin: 0 0 .2rem; font-size: 1rem; letter-spacing: -.01em }
 .card {
@@ -111,6 +111,8 @@ input[type=text]:not(.label-edit) {
 input[type=range] { flex: 1; min-width: 10rem; accent-color: var(--accent) }
 input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
 .muted { color: var(--muted); font-size: .78rem }
+#reach > span { display: block; margin-top: .4rem; overflow-wrap: anywhere }
+#reach strong { color: var(--text) }
 .pill {
   padding: .08rem .4rem; border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--panel-sunken); color: var(--muted); font-size: .72rem;

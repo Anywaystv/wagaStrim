@@ -8,16 +8,21 @@
 <header>
   <span class="wordmark">waga<span>Strim</span></span>
   <span class="header-end">
+    <span class="muted" id="total">No cameras streaming.</span>
     <span class="status-button warn">no media</span>
   </span>
 </header>
 <main>
   <section class="card">
     <div class="row between">
-      <h2>Reachability</h2>
+      <div class="row">
+        <h2>Reachability</h2>
+        <span class="muted">(don't show on stream)</span>
+      </div>
       <button class="button" id="check">Check</button>
     </div>
-    <p class="muted" id="reach" role="status" aria-live="polite">Not checked yet.</p>
+    <p class="muted" id="reach-status">Not checked yet.</p>
+    <p class="muted" id="reach" role="status" aria-live="polite"></p>
   </section>
 
   <section class="card">
@@ -71,6 +76,7 @@
         <button class="button" data-reveal aria-label="Show the receiver link for {{.Label}}">Show</button>
         <button class="button" data-copy aria-label="Copy the receiver link for {{.Label}}">Copy</button>
       </div>
+      <p class="muted">Use Opus audio for browser playback. AAC needs an AAC-capable WHEP receiver.</p>
     </div>
 
     <div class="field">
@@ -123,7 +129,6 @@
         <input type="text" id="label" placeholder="Camera name" maxlength="48">
         <button class="button" id="add">Add camera</button>
       </span>
-      <span class="muted" id="total">No cameras streaming.</span>
     </div>
   </section>
 </main>
