@@ -87,6 +87,8 @@
 
     <p class="muted" data-stats>Waiting for a publisher.</p>
 
+    <details class="camera-settings">
+      <summary>Camera settings<span class="sr-only"> for {{.Label}}</span></summary>
     <div class="field">
       <span class="field-label" id="send-{{.ID}}">Camera input · Moblin</span>
       <div class="row camera-link">
@@ -153,6 +155,7 @@
                placeholder="Group name" data-group="{{.ID}}">
       </div>
       <p class="muted">Same group, same delay. Leave empty for one camera.</p>
+    </details>
     </details>
   </section>
   {{end}}

@@ -47,7 +47,9 @@ h2 { display: flex; align-items: center; margin: 0 0 .2rem; font-size: 1rem; let
 .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap }
 .row.between { justify-content: space-between }
 .field { margin-top: .9rem }
-.camera-card > .field { margin-top: 1.1rem }
+.camera-settings > .field { margin-top: 1.1rem }
+.camera-settings > summary { cursor: pointer; padding: .35rem 0; font-size: .84rem; font-weight: 600 }
+.camera-settings > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
 .camera-card .field > .muted, .camera-help p { margin: .35rem 0 0 }
 .camera-card .field > label:not(.codec), .camera-card .field-label, .camera-card .codecs legend {
   color: var(--text); font-size: .84rem; font-weight: 600; margin-bottom: .4rem;

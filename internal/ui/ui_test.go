@@ -148,3 +148,34 @@ func TestThePageItselfIsServed(t *testing.T) {
 	assert.Equal(t, http.StatusOK, get(t, "127.0.0.1:7330", "none"))
 	assert.Equal(t, http.StatusOK, get(t, "127.0.0.1:7330", ""))
 }
+
+func TestCameraSettingsCollapseIndependently(t *testing.T) {
+	cfg := &config.Config{UIPort: testPort, Ingests: []config.Ingest{
+		{ID: "cam1", Label: "Phone", DelayMS: 2000},
+		{ID: "cam2", Label: "Drone", DelayMS: 3000, SyncGroup: "outside"},
+	}}
+	log := logging.NewDefaultLoggerFactory().NewLogger("test")
+	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
+	require.NoError(t, err)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:7330/", nil)
+	res := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(res, req)
+	require.Equal(t, http.StatusOK, res.Code)
+	for _, camera := range cfg.Ingests {
+		_, card, found := strings.Cut(res.Body.String(), `data-id="`+camera.ID+`">`)
+		require.True(t, found)
+		card, _, found = strings.Cut(card, "</section>")
+		require.True(t, found)
+		header, settings, found := strings.Cut(card, `<details class="camera-settings">`)
+		require.True(t, found, "each camera starts collapsed without grouping other cameras")
+		assert.Contains(t, header, `data-label="`+camera.ID+`"`)
+		assert.Contains(t, header, "data-status")
+		assert.Contains(t, header, "data-stats")
+		assert.Contains(t, settings, `for `+camera.Label+`</span></summary>`)
+		for _, field := range []string{"send-", "recv-", "delay-", "group-"} {
+			assert.Contains(t, settings, `id="`+field+camera.ID+`"`)
+		}
+		assert.Contains(t, settings, `data-codecs="`+camera.ID+`"`)
+		assert.True(t, strings.HasSuffix(strings.TrimSpace(settings), "</details>"))
+	}
+}
