@@ -57,7 +57,24 @@ document.addEventListener("click", (ev) => {
   if (removeID) {
     post("/api/ingests/remove", { id: removeID }, btn).then(() => location.reload());
   }
+  const resetID = btn.getAttribute("data-reset-key");
+  if (resetID) resetStreamKey(btn, resetID);
 });
+
+async function resetStreamKey(btn, id) {
+  const card = btn.closest(".camera-card");
+  const name = card.querySelector("[data-label]").value;
+  if (!confirm(`Reset the stream key for ${name}? This disconnects the stream and invalidates the old sender link. The preview link stays unchanged.`)) return;
+  const note = card.querySelector("[data-reset-note]");
+  btn.disabled = true;
+  try {
+    await post("/api/ingests/reset-key", { id });
+    location.reload();
+  } catch {
+    note.textContent = "Could not confirm the reset. Refresh and check the sender link before retrying.";
+    btn.disabled = false;
+  }
+}
 
 document.addEventListener("input", (ev) => {
   const slider = ev.target.closest("[data-delay]");

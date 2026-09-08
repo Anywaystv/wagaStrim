@@ -47,6 +47,16 @@ h2 { display: flex; align-items: center; margin: 0 0 .2rem; font-size: 1rem; let
 .row { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap }
 .row.between { justify-content: space-between }
 .field { margin-top: .9rem }
+.camera-heading { display: grid; grid-template-columns: minmax(0, 14rem) minmax(0, 1fr) auto; align-items: center; gap: .6rem }
+.camera-heading h2, .camera-heading [data-stats] { margin: 0; min-width: 0 }
+.camera-heading .label-edit { width: 100%; min-width: 0 }
+.camera-heading [data-stats] { overflow-wrap: anywhere }
+.camera-actions { flex-wrap: nowrap }
+@media (max-width: 40rem) {
+  .camera-heading { grid-template-columns: minmax(0, 1fr) auto }
+  .camera-heading [data-stats] { grid-row: 2; grid-column: 1 / -1 }
+  .camera-actions { grid-row: 1; grid-column: 2 }
+}
 .camera-settings > .field { margin-top: 1.1rem }
 .camera-settings > summary { cursor: pointer; padding: .35rem 0; font-size: .84rem; font-weight: 600 }
 .camera-settings > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }

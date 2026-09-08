@@ -5,6 +5,7 @@ package control
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -74,6 +75,21 @@ func (s *Server) handleList(wri http.ResponseWriter, _ *http.Request) {
 	s.respond(wri, http.StatusOK, struct {
 		Ingests []cameraResponse `json:"ingests"`
 	}{Ingests: result})
+}
+
+func (s *Server) handleResetKey(wri http.ResponseWriter, req *http.Request) {
+	camera, err := s.cfg.ResetSenderKey(req.PathValue("id"))
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, config.ErrUnknownIngest) {
+			status = http.StatusNotFound
+		}
+		http.Error(wri, "could not reset stream key", status)
+
+		return
+	}
+	s.revoke(camera.ID)
+	s.respond(wri, http.StatusOK, s.cameraResponse(camera))
 }
 
 func (s *Server) respond(wri http.ResponseWriter, status int, value any) {

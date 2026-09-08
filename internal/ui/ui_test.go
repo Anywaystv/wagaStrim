@@ -19,6 +19,7 @@ import (
 const (
 	testPort   = 7330
 	sameOrigin = "same-origin"
+	crossSite  = "cross-site"
 )
 
 func TestTokenBootstrapGuardsAndGuide(t *testing.T) {
@@ -26,7 +27,7 @@ func TestTokenBootstrapGuardsAndGuide(t *testing.T) {
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
 	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
 	require.NoError(t, err)
-	for _, site := range []string{sameOrigin, "cross-site", "same-site"} {
+	for _, site := range []string{sameOrigin, crossSite, "same-site"} {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
 			"http://127.0.0.1:7330/api/control/token", nil)
 		req.Header.Set("Sec-Fetch-Site", site)
@@ -86,7 +87,7 @@ func TestLANControlToggleRejectsCrossSiteAndInvalidBody(t *testing.T) {
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
 	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
 	require.NoError(t, err)
-	for _, site := range []string{sameOrigin, "cross-site"} {
+	for _, site := range []string{sameOrigin, crossSite} {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
 			"http://127.0.0.1:7330/api/control/lan", strings.NewReader(`{}`))
 		req.Header.Set("Sec-Fetch-Site", site)
@@ -135,7 +136,7 @@ func TestAReboundHostIsRefused(t *testing.T) {
 // The mutating endpoints take JSON but never check the content type, so a
 // cross-site text/plain post is not preflighted and would otherwise arrive.
 func TestACrossSiteRequestIsRefused(t *testing.T) {
-	assert.Equal(t, http.StatusNotFound, get(t, "127.0.0.1:7330", "cross-site"))
+	assert.Equal(t, http.StatusNotFound, get(t, "127.0.0.1:7330", crossSite))
 	assert.Equal(t, http.StatusNotFound, get(t, "127.0.0.1:7330", "same-site"))
 }
 
@@ -176,6 +177,28 @@ func TestCameraSettingsCollapseIndependently(t *testing.T) {
 			assert.Contains(t, settings, `id="`+field+camera.ID+`"`)
 		}
 		assert.Contains(t, settings, `data-codecs="`+camera.ID+`"`)
+		assert.Contains(t, settings, `data-reset-key="`+camera.ID+`"`)
 		assert.True(t, strings.HasSuffix(strings.TrimSpace(settings), "</details>"))
 	}
+}
+
+func TestResetKeyRejectsCrossSiteRequests(t *testing.T) {
+	cfg := &config.Config{UIPort: testPort}
+	log := logging.NewDefaultLoggerFactory().NewLogger("test")
+	revoked := false
+	srv, err := New(cfg, log, stats.New(), func(string) { revoked = true }, func(string, int) {})
+	require.NoError(t, err)
+	for _, site := range []string{sameOrigin, crossSite} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+			"http://127.0.0.1:7330/api/ingests/reset-key", strings.NewReader(`{}`))
+		req.Header.Set("Sec-Fetch-Site", site)
+		res := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(res, req)
+		want := http.StatusBadRequest
+		if site != sameOrigin {
+			want = http.StatusNotFound
+		}
+		assert.Equal(t, want, res.Code)
+	}
+	assert.False(t, revoked)
 }

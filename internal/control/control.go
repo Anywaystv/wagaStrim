@@ -63,6 +63,7 @@ func New(
 	mux.HandleFunc("PUT /control/ingests", srv.authed(srv.handleIngests))
 	mux.HandleFunc("POST /control/ingests", srv.authed(srv.handleCreate))
 	mux.HandleFunc("GET /control/ingests", srv.authed(srv.handleList))
+	mux.HandleFunc("POST /control/ingests/{id}/reset-key", srv.authed(srv.handleResetKey))
 	mux.HandleFunc("GET /control/stats", srv.authed(srv.handleStats))
 
 	srv.http = &http.Server{

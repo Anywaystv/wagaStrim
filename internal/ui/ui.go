@@ -127,6 +127,7 @@ func New(
 	mux.HandleFunc("GET /{$}", srv.handlePage)
 	mux.HandleFunc("POST /api/ingests", srv.handleAdd)
 	mux.HandleFunc("POST /api/ingests/remove", srv.handleRemove)
+	mux.HandleFunc("POST /api/ingests/reset-key", srv.handleResetKey)
 	mux.HandleFunc("POST /api/ingests/delay", srv.handleDelay)
 	mux.HandleFunc("GET /api/stats", srv.handleStats)
 	mux.HandleFunc("POST /api/ingests/group", srv.handleGroup)
@@ -435,6 +436,27 @@ func (s *Server) handleRemove(wri http.ResponseWriter, req *http.Request) {
 
 		return nil
 	})
+}
+
+func (s *Server) handleResetKey(wri http.ResponseWriter, req *http.Request) {
+	var body idBody
+	if err := decode(req, &body); err != nil || body.ID == "" {
+		http.Error(wri, "camera id is required", http.StatusBadRequest)
+
+		return
+	}
+	camera, err := s.cfg.ResetSenderKey(body.ID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, config.ErrUnknownIngest) {
+			status = http.StatusNotFound
+		}
+		s.fail(wri, status, err)
+
+		return
+	}
+	s.revoke(camera.ID)
+	wri.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleDelay(wri http.ResponseWriter, req *http.Request) {

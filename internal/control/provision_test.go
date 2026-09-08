@@ -90,3 +90,39 @@ func TestProvisioningLinkOrigins(t *testing.T) {
 	assert.Equal(t, "https://stream.example.com/whip/sender", links.WHIP)
 	assert.Equal(t, "https://stream.example.com/whep/receiver", links.WHEP)
 }
+
+func TestResetKeyRequiresAuthenticationAndRevokesSessions(t *testing.T) {
+	srv, cfg, revoked := testServer(t)
+	before, err := cfg.AddIngest("Phone")
+	require.NoError(t, err)
+	path := "/control/ingests/" + before.ID + "/reset-key"
+	for _, credential := range []string{"wrong", token} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, nil)
+		req.RemoteAddr = loopbackPeer
+		req.Header.Set("Authorization", "Bearer "+credential)
+		res := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(res, req)
+		if credential != token {
+			assert.Equal(t, http.StatusNotFound, res.Code)
+			assert.Empty(t, *revoked)
+			assert.Equal(t, before, cfg.List()[0])
+
+			continue
+		}
+		require.Equal(t, http.StatusOK, res.Code)
+		assert.Equal(t, "no-store", res.Header().Get("Cache-Control"))
+		var after cameraResponse
+		require.NoError(t, json.Unmarshal(res.Body.Bytes(), &after))
+		assert.NotEqual(t, before.SenderKey, after.SenderKey)
+		assert.Equal(t, before.ReceiverKey, after.ReceiverKey)
+		assert.Equal(t, srv.cameraResponse(after.Ingest).Links, after.Links)
+		assert.Equal(t, []string{before.ID}, *revoked)
+	}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/control/ingests/missing/reset-key", nil)
+	req.RemoteAddr = loopbackPeer
+	req.Header.Set("Authorization", "Bearer "+token)
+	res := httptest.NewRecorder()
+	srv.http.Handler.ServeHTTP(res, req)
+	assert.Equal(t, http.StatusNotFound, res.Code)
+	assert.Equal(t, []string{before.ID}, *revoked)
+}
