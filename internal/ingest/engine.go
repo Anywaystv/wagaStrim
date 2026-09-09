@@ -78,7 +78,7 @@ func NewSettingEngine(mediaPort int, publicIPs ...string) (*webrtc.SettingEngine
 	// One forwarded UDP port for every ingest and every session. Allocating a
 	// port per ingest would turn "forward two ports" into "forward one per
 	// camera", which is the setup story the product depends on.
-	engine.SetICEUDPMux(mux)
+	engine.SetICEUDPMux(newRecoveryMux(mux, recoveryNetwork.state))
 
 	// Keeps a phone connected across a Wi-Fi to cellular handoff instead of
 	// forcing a reconnect, and keeps losing candidates open and validated.

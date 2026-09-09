@@ -6,6 +6,7 @@ package ingest
 import (
 	"encoding/binary"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,7 +53,11 @@ func (n *recoveryNet) ListenUDP(network string, address *net.UDPAddr) (transport
 		return nil, err
 	}
 
-	return &recoveryConn{UDPConn: conn, log: n.log, recoveryState: n.state}, nil
+	wrapped := &recoveryConn{UDPConn: conn, log: n.log, recoveryState: n.state}
+	n.state.mu.Lock()
+	n.state.conns = append(n.state.conns, wrapped)
+	n.state.mu.Unlock()
+	return wrapped, nil
 }
 
 type recoveryPacketID struct {
@@ -67,8 +72,9 @@ type recoveryStreamID struct {
 }
 
 type recoveredDatagram struct {
-	data []byte
-	addr net.Addr
+	data     []byte
+	addr     net.Addr
+	identity string
 }
 
 type recoveryStream struct {
@@ -113,6 +119,8 @@ type recoveryBindingID struct {
 
 type recoveryState struct {
 	mu           sync.Mutex
+	conns        []*recoveryConn
+	active       map[string]bool
 	packets      map[recoveryPacketID][]byte
 	packetOrder  []recoveryPacketID
 	packetHead   int
@@ -205,6 +213,9 @@ func (c *recoveryConn) popReady() (recoveredDatagram, bool) {
 func (c *recoveryConn) remember(id recoveryPacketID, data []byte, remote net.Addr) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if !c.activeIdentityLocked(id.remote) {
+		return nil
+	}
 	cost := 1
 	if stream := c.streams[recoveryStreamID{remote: id.remote, ssrc: id.ssrc}]; stream != nil {
 		delta := id.sequenceNumber - stream.highest
@@ -253,6 +264,10 @@ func (c *recoveryConn) consumeParity(data []byte, remote net.Addr) (recoveredDat
 	c.mu.Lock()
 
 	id.remote = c.identityLocked(remote)
+	if !c.activeIdentityLocked(id.remote) {
+		c.mu.Unlock()
+		return recoveredDatagram{}, false
+	}
 	for index := range group.entries {
 		group.entries[index].id.remote = id.remote
 	}
@@ -419,7 +434,7 @@ func (c *recoveryConn) recoverGroupLocked(group recoveryGroup) (recoveredDatagra
 		delete(stream.missing, wanted.id.sequenceNumber)
 	}
 
-	return recoveredDatagram{data: data, addr: group.remote}, missing
+	return recoveredDatagram{data: data, addr: group.remote, identity: wanted.id.remote}, missing
 }
 
 func (c *recoveryConn) storeGroupLocked(id recoveryGroupID, group recoveryGroup) {
@@ -504,7 +519,8 @@ func (c *recoveryConn) rememberBindingLocked(key recoveryBindingID, message *stu
 
 func (c *recoveryConn) confirmBindingLocked(key recoveryBindingID) {
 	username := c.pendingBindings[key]
-	if username == "" {
+	delete(c.pendingBindings, key)
+	if username == "" || !c.activeIdentityLocked("ice:"+username) {
 		return
 	}
 	if c.identities == nil {
@@ -514,7 +530,16 @@ func (c *recoveryConn) confirmBindingLocked(key recoveryBindingID) {
 		clear(c.identities)
 	}
 	c.identities[key.remote] = username
-	delete(c.pendingBindings, key)
+}
+
+func (s *recoveryState) activeIdentityLocked(identity string) bool {
+	// Standalone recovery sockets used by tests have no ICE mux lifecycle.
+	if s.active == nil {
+		return true
+	}
+	username, ok := strings.CutPrefix(identity, "ice:")
+	ufrag, _, separated := strings.Cut(username, ":")
+	return ok && separated && s.active[ufrag]
 }
 
 func (c *recoveryConn) WriteTo(data []byte, remote net.Addr) (int, error) {

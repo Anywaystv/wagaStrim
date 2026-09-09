@@ -33,7 +33,8 @@ func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, mux.Close()) })
 	engine := webrtc.SettingEngine{}
 	engine.SetIncludeLoopbackCandidate(true)
-	engine.SetICEUDPMux(mux)
+	conn.conns = append(conn.conns, conn)
+	engine.SetICEUDPMux(newRecoveryMux(mux, conn.recoveryState))
 	api, err := buildAPI(&engine, []string{"h264"}, nil)
 	require.NoError(t, err)
 	receiver, err := api.NewPeerConnection(webrtc.Configuration{})
@@ -70,6 +71,8 @@ func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
 			assert.False(t, strings.HasPrefix(conn.identity(sender.LocalAddr()), "ice:"))
 		}
 	}
+	require.NoError(t, receiver.Close())
+	assert.Empty(t, conn.authenticatedIdentity(sender.LocalAddr()), "closing ICE must revoke recovery access")
 }
 
 func TestRecoveryJoinsAuthenticatedPathsAcrossSockets(t *testing.T) {
