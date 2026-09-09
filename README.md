@@ -111,8 +111,8 @@ encrypted VPN for internet access.
 
 ## Release packaging
 
-For a distributable headless build, run `sh scripts/build-release.sh` with Go and
-Python 3 installed. The archive in `dist/` includes the executable, README and
+For a distributable headless build, run `sh scripts/build-release.sh` with Go installed.
+The archive in `dist/` includes the executable, README and
 project/dependency license notices. Set `GOOS` and `GOARCH` to cross-compile.
 Keep the notices with the executable when redistributing it.
 

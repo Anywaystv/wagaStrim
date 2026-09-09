@@ -58,7 +58,10 @@ jobs:
 
       # dupl cannot see a copy in another package or behind a build tag.
       - name: duplicate function bodies
-        run: ./scripts/dupes.py
+        run: go run scripts/tools.go dupes
+
+      - name: packaging tool tests
+        run: go test scripts/tools.go scripts/tools_test.go
 
       - name: test
         run: go test -race ./...
