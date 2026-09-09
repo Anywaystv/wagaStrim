@@ -124,14 +124,6 @@ type recoveryState struct {
 	work         *rate.Limiter
 }
 
-func newRecoveryConn(conn transport.UDPConn, log logging.LeveledLogger) *recoveryConn {
-	return &recoveryConn{
-		UDPConn:       conn,
-		log:           log,
-		recoveryState: newRecoveryState(),
-	}
-}
-
 func newRecoveryState() *recoveryState {
 	return &recoveryState{
 		packets: make(map[recoveryPacketID][]byte),
@@ -153,7 +145,7 @@ func (c *recoveryConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 		}
 
 		if hasRecoveryMagic(buffer[:read]) {
-			if !c.authenticated(remote) {
+			if c.authenticatedIdentity(remote) == "" {
 				continue
 			}
 			if datagram, ok := c.consumeParity(buffer[:read], remote); ok {
@@ -170,10 +162,10 @@ func (c *recoveryConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 			return read, remote, nil
 		}
 
-		if !c.authenticated(remote) {
+		id.remote = c.authenticatedIdentity(remote)
+		if id.remote == "" {
 			return read, remote, nil
 		}
-		id.remote = c.identity(remote)
 		request := c.remember(id, buffer[:read], remote)
 		c.sendRequest(request, remote)
 		c.sendRequest(c.deliveryReceipt(id, buffer[:read], remote, time.Now()), remote)
@@ -184,11 +176,15 @@ func (c *recoveryConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 
 // Only Pion's authenticated binding success grants recovery access. Unknown
 // RTP still reaches Pion, without allocating recovery history first.
-func (c *recoveryConn) authenticated(remote net.Addr) bool {
+func (c *recoveryConn) authenticatedIdentity(remote net.Addr) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return c.identities[remote.String()] != ""
+	if identity := c.identities[remote.String()]; identity != "" {
+		return "ice:" + identity
+	}
+
+	return ""
 }
 
 func (c *recoveryConn) popReady() (recoveredDatagram, bool) {
@@ -455,13 +451,6 @@ func (c *recoveryConn) storeGroupLocked(id recoveryGroupID, group recoveryGroup)
 	}
 }
 
-func (c *recoveryConn) identity(remote net.Addr) string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.identityLocked(remote)
-}
-
 func (c *recoveryConn) identityLocked(remote net.Addr) string {
 	if identity := c.identities[remote.String()]; identity != "" {
 		return "ice:" + identity
@@ -643,11 +632,7 @@ func makeRecoveryRequest(ssrc uint32, sequenceNumbers []uint16) []byte {
 	request := make([]byte, recoveryHeaderSize+len(sequenceNumbers)*2)
 	copy(request, "WGR1")
 	request[4] = recoveryRequestType
-	var count byte
-	for range sequenceNumbers {
-		count++
-	}
-	request[5] = count
+	request[5] = byte(len(sequenceNumbers)) //nolint:gosec // dueRepairs caps the count at recoveryRequestSize (32).
 	binary.BigEndian.PutUint32(request[8:12], ssrc)
 	for index, sequenceNumber := range sequenceNumbers {
 		binary.BigEndian.PutUint16(request[recoveryHeaderSize+index*2:], sequenceNumber)

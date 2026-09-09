@@ -635,10 +635,7 @@ func (s *Server) CloseIngest(ingestID string) {
 
 // Teardown ends a session named by its WHIP resource id.
 func (s *Server) Teardown(resource string) error {
-	s.mu.Lock()
-	session, ok := s.sessions[resource]
-	s.mu.Unlock()
-
+	session, ok := s.session(resource)
 	if !ok {
 		return ErrNoSession
 	}

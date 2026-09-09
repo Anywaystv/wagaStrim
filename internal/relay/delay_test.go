@@ -15,6 +15,13 @@ import (
 
 const testClock = 90000
 
+func (b *Buffer) depth() time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.depthLocked()
+}
+
 func videoCodec() webrtc.RTPCodecCapability {
 	return webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: testClock}
 }

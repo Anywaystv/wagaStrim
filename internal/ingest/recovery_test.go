@@ -20,6 +20,13 @@ import (
 	"golang.org/x/time/rate"
 )
 
+func (c *recoveryConn) identity(remote net.Addr) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.identityLocked(remote)
+}
+
 func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
 	conn, sender := recoverySocketPair(t)
 	mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: conn})
@@ -122,6 +129,9 @@ func bindRecoveryPath(t *testing.T, conn *recoveryConn, remote net.Addr, usernam
 
 func TestRecoveryCompletedGroupsKeepOrderBounded(t *testing.T) {
 	conn, sender := recoverySocketPair(t)
+	// Exercise compaction independently of the wall-clock work budget.
+	// TestRecoveryBudgetBypassesHistoryWithoutDroppingMedia covers that limit.
+	conn.work = rate.NewLimiter(rate.Inf, 65536)
 	for cycle := range 2000 {
 		packets := make([][]byte, 8)
 		for index := range packets {
@@ -393,7 +403,7 @@ func recoverySocketPair(t *testing.T) (*recoveryConn, *net.UDPConn) {
 
 	log := logging.NewDefaultLoggerFactory().NewLogger("recovery-test")
 
-	return newRecoveryConn(server, log), sender
+	return &recoveryConn{UDPConn: server, log: log, recoveryState: newRecoveryState()}, sender
 }
 
 func authenticatedRecoverySocketPair(t *testing.T) (*recoveryConn, *net.UDPConn) {
