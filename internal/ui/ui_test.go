@@ -47,7 +47,16 @@ func TestTokenBootstrapGuardsAndGuide(t *testing.T) {
 		srv.http.Handler.ServeHTTP(res, req)
 		require.Equal(t, http.StatusOK, res.Code)
 		assert.NotContains(t, res.Body.String(), cfg.Token())
-		assert.Contains(t, res.Body.String(), "API setup")
+		if path == "/" {
+			header, _, found := strings.Cut(res.Body.String(), "</header>")
+			require.True(t, found)
+			assert.Contains(t, header, "no media</span>\n    <a class=\"button\" href=\"/api-guide\">API Guide</a>")
+			assert.Equal(t, 1, strings.Count(res.Body.String(), `href="/api-guide"`))
+			assert.NotContains(t, res.Body.String(), "—")
+			assert.NotContains(t, res.Body.String(), "–")
+		} else {
+			assert.Contains(t, res.Body.String(), "API setup")
+		}
 	}
 }
 

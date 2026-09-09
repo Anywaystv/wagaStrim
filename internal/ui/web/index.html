@@ -10,6 +10,7 @@
   <span class="header-end">
     <span class="muted" id="total">No cameras streaming.</span>
     <span id="media-status" class="status-button warn" role="status">no media</span>
+    <a class="button" href="/api-guide">API Guide</a>
   </span>
 </header>
 <main>
@@ -28,7 +29,6 @@
     <p class="muted" id="reach-status">Not checked yet.</p>
     <div class="muted" id="reach" role="status" aria-live="polite"></div>
     <p class="muted">Control API access requires a token. Camera streaming and preview links are unaffected.</p>
-    <p><a class="button" href="/api-guide">API setup guide — tokens, keys and links</a></p>
     {{if not .ControlConfigured}}
     <button class="button" id="create-token">Generate control token</button>
     <div id="new-token" hidden>
@@ -44,12 +44,12 @@
     <p class="muted" id="token-note" role="status" aria-live="polite">{{if and .ControlConfigured (not .ControlAvailable)}}Token saved. Restart WagaStrim to enable the control API.{{end}}</p>
     <label class="row">
       <input type="checkbox" id="control-lan" {{if .LANControl}}checked{{end}} {{if not .ControlAvailable}}disabled{{end}}>
-      <span>Local access — Wi-Fi and VPN computers</span>
+      <span>Local access - Wi-Fi and VPN computers</span>
     </label>
     <p class="muted" id="control-lan-note" role="status" aria-live="polite">{{if not .ControlAvailable}}The control API is inactive. Configure a control token to use this option.{{end}}</p>
     <label class="row">
       <input type="checkbox" id="control-remote" {{if .RemoteControl}}checked{{end}} {{if not .ControlAvailable}}disabled{{end}}>
-      <span>Remote access — internet connections</span>
+      <span>Remote access - internet connections</span>
     </label>
     <p class="muted">Enabled by default with a control token. Use HTTPS or a VPN and restrict the control port by firewall.</p>
     <p class="muted" id="control-remote-note" role="status" aria-live="polite"></p>
@@ -124,7 +124,7 @@
         <input type="range" id="delay-{{.ID}}" min="{{$.Floor}}" max="10000" step="100"
                value="{{.DelayMS}}" data-delay="{{.ID}}">
       </div>
-      <p class="muted">{{$.Floor}}–10000 ms · New cameras start at 2000 ms. More buffer helps with unstable connections.</p>
+      <p class="muted">{{$.Floor}}-10000 ms · New cameras start at 2000 ms. More buffer helps with unstable connections.</p>
       {{if ne .Effective .DelayMS}}
         <p class="muted">Group {{.SyncGroup}} plays at {{.Effective}} ms.</p>
       {{end}}

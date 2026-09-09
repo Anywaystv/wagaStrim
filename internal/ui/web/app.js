@@ -187,7 +187,7 @@ document.getElementById("check").addEventListener("click", async (ev) => {
     lines.push(
       ["Ports: ", `TCP ${r.signalPort}`, ` setup · UDP ${r.mediaPort} media`],
     );
-    if (r.socketNote?.includes("capped")) lines.push(["Receive buffer limited — see details.", "", ""]);
+    if (r.socketNote?.includes("capped")) lines.push(["Receive buffer limited - see details.", "", ""]);
 
     out.replaceChildren();
     for (const [label, value, detail] of lines) {
