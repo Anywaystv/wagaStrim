@@ -109,6 +109,13 @@ For a local HTTPS reverse proxy, omit the TLS fields and set `signalBind` to
 `127.0.0.1` and `publicUrl` to `https://stream.example.com`. Use HTTPS or an
 encrypted VPN for internet access.
 
+## Release packaging
+
+For a distributable headless build, run `sh scripts/build-release.sh` with Go and
+Python 3 installed. The archive in `dist/` includes the executable, README and
+project/dependency license notices. Set `GOOS` and `GOARCH` to cross-compile.
+Keep the notices with the executable when redistributing it.
+
 ## Compatibility
 
 Audio follows the sender automatically: **Opus or experimental AAC**. AAC is
