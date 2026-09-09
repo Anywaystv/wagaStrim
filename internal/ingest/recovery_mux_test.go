@@ -12,6 +12,7 @@ import (
 )
 
 func TestRecoveryRemovalIsScopedAcrossPathsAndAddressReuse(t *testing.T) {
+	const oldIdentity = "ice:old:phone"
 	wifi, sender := recoverySocketPair(t)
 	cellular, other := recoverySocketPair(t)
 	cellular.recoveryState = wifi.recoveryState
@@ -28,21 +29,21 @@ func TestRecoveryRemovalIsScopedAcrossPathsAndAddressReuse(t *testing.T) {
 	}
 	bindRecoveryPath(t, wifi, sender.LocalAddr(), "old:phone", true)
 	bindRecoveryPath(t, cellular, other.LocalAddr(), "old:phone", true)
-	assert.Equal(t, "ice:old:phone", wifi.authenticatedIdentity(sender.LocalAddr()))
-	assert.Equal(t, "ice:old:phone", cellular.authenticatedIdentity(other.LocalAddr()))
+	assert.Equal(t, oldIdentity, wifi.authenticatedIdentity(sender.LocalAddr()))
+	assert.Equal(t, oldIdentity, cellular.authenticatedIdentity(other.LocalAddr()))
 	// A replacement has already authenticated on one of the old addresses.
 	bindRecoveryPath(t, wifi, sender.LocalAddr(), "old-other:phone", true)
 	bindRecoveryPath(t, cellular, other.LocalAddr(), "old:pending", false)
 	wifi.mu.Lock()
 	wifi.deliveries = map[string]*deliveryBatch{}
-	for _, identity := range []string{"ice:old:phone", "ice:old-other:phone"} {
+	for _, identity := range []string{oldIdentity, "ice:old-other:phone"} {
 		id := recoveryPacketID{remote: identity, ssrc: 1, sequenceNumber: 1}
 		wifi.storePacketLocked(id, []byte{1})
 		wifi.streams[recoveryStreamID{remote: identity, ssrc: 1}] = &recoveryStream{}
 		wifi.storeGroupLocked(recoveryGroupID{remote: identity, ssrc: 1}, recoveryGroup{})
 		wifi.ready = append(wifi.ready, recoveredDatagram{identity: identity})
 	}
-	wifi.deliveries["old"] = &deliveryBatch{identity: "ice:old:phone"}
+	wifi.deliveries["old"] = &deliveryBatch{identity: oldIdentity}
 	wifi.deliveries["new"] = &deliveryBatch{identity: "ice:old-other:phone"}
 	wifi.mu.Unlock()
 
@@ -65,7 +66,7 @@ func TestRecoveryRemovalIsScopedAcrossPathsAndAddressReuse(t *testing.T) {
 	// Neither a late success nor in-flight recovery work may resurrect state.
 	bindRecoveryPath(t, cellular, other.LocalAddr(), "old:phone", true)
 	assert.Empty(t, cellular.authenticatedIdentity(other.LocalAddr()))
-	wifi.remember(recoveryPacketID{remote: "ice:old:phone", ssrc: 1}, testRecoveryRTP(2, 1), sender.LocalAddr())
+	wifi.remember(recoveryPacketID{remote: oldIdentity, ssrc: 1}, testRecoveryRTP(2, 1), sender.LocalAddr())
 	packets := make([][]byte, 8)
 	for i := range packets {
 		packets[i] = testRecoveryRTP(uint16(i), 1)

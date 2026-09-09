@@ -4,6 +4,7 @@
 package ingest
 
 import (
+	"maps"
 	"net"
 	"slices"
 	"strings"
@@ -20,6 +21,7 @@ func newRecoveryMux(mux ice.UDPMux, state *recoveryState) *recoveryMux {
 	state.mu.Lock()
 	state.active = make(map[string]bool)
 	state.mu.Unlock()
+
 	return &recoveryMux{UDPMux: mux, state: state}
 }
 
@@ -30,57 +32,46 @@ func (m *recoveryMux) GetConn(ufrag string, addr net.Addr) (net.PacketConn, erro
 	if err == nil {
 		m.state.active[ufrag] = true
 	}
+
 	return conn, err
 }
 
 func (m *recoveryMux) RemoveConnByUfrag(ufrag string) {
-	s := m.state
-	s.mu.Lock()
-	delete(s.active, ufrag)
+	state := m.state
+	state.mu.Lock()
+	delete(state.active, ufrag)
 	prefix := "ice:" + ufrag + ":"
-	for _, conn := range s.conns {
+	for _, conn := range state.conns {
 		conn.ready = slices.DeleteFunc(conn.ready, func(datagram recoveredDatagram) bool {
 			return strings.HasPrefix(datagram.identity, prefix)
 		})
-		for remote, username := range conn.identities {
-			if strings.HasPrefix(username, ufrag+":") {
-				delete(conn.identities, remote)
-			}
-		}
-		for key, username := range conn.pendingBindings {
-			if strings.HasPrefix(username, ufrag+":") {
-				delete(conn.pendingBindings, key)
-			}
-		}
-		for remote, batch := range conn.deliveries {
-			if strings.HasPrefix(batch.identity, prefix) {
-				delete(conn.deliveries, remote)
-			}
-		}
+		maps.DeleteFunc(conn.identities, func(_ string, username string) bool {
+			return strings.HasPrefix(username, ufrag+":")
+		})
+		maps.DeleteFunc(conn.pendingBindings, func(_ recoveryBindingID, username string) bool {
+			return strings.HasPrefix(username, ufrag+":")
+		})
+		maps.DeleteFunc(conn.deliveries, func(_ string, batch *deliveryBatch) bool {
+			return strings.HasPrefix(batch.identity, prefix)
+		})
 	}
-	for id := range s.packets {
-		if strings.HasPrefix(id.remote, prefix) {
-			delete(s.packets, id)
-		}
-	}
-	s.packetOrder = slices.DeleteFunc(s.packetOrder[s.packetHead:], func(id recoveryPacketID) bool {
+	maps.DeleteFunc(state.packets, func(id recoveryPacketID, _ []byte) bool {
 		return strings.HasPrefix(id.remote, prefix)
 	})
-	s.packetHead = 0
-	for id := range s.streams {
-		if strings.HasPrefix(id.remote, prefix) {
-			delete(s.streams, id)
-		}
-	}
-	for id := range s.groups {
-		if strings.HasPrefix(id.remote, prefix) {
-			delete(s.groups, id)
-		}
-	}
-	s.groupOrder = slices.DeleteFunc(s.groupOrder[s.groupHead:], func(id recoveryGroupID) bool {
+	state.packetOrder = slices.DeleteFunc(state.packetOrder[state.packetHead:], func(id recoveryPacketID) bool {
 		return strings.HasPrefix(id.remote, prefix)
 	})
-	s.groupHead = 0
-	s.mu.Unlock()
+	state.packetHead = 0
+	maps.DeleteFunc(state.streams, func(id recoveryStreamID, _ *recoveryStream) bool {
+		return strings.HasPrefix(id.remote, prefix)
+	})
+	maps.DeleteFunc(state.groups, func(id recoveryGroupID, _ recoveryGroup) bool {
+		return strings.HasPrefix(id.remote, prefix)
+	})
+	state.groupOrder = slices.DeleteFunc(state.groupOrder[state.groupHead:], func(id recoveryGroupID) bool {
+		return strings.HasPrefix(id.remote, prefix)
+	})
+	state.groupHead = 0
+	state.mu.Unlock()
 	m.UDPMux.RemoveConnByUfrag(ufrag)
 }

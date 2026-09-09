@@ -57,6 +57,7 @@ func (n *recoveryNet) ListenUDP(network string, address *net.UDPAddr) (transport
 	n.state.mu.Lock()
 	n.state.conns = append(n.state.conns, wrapped)
 	n.state.mu.Unlock()
+
 	return wrapped, nil
 }
 
@@ -266,6 +267,7 @@ func (c *recoveryConn) consumeParity(data []byte, remote net.Addr) (recoveredDat
 	id.remote = c.identityLocked(remote)
 	if !c.activeIdentityLocked(id.remote) {
 		c.mu.Unlock()
+
 		return recoveredDatagram{}, false
 	}
 	for index := range group.entries {
@@ -539,6 +541,7 @@ func (s *recoveryState) activeIdentityLocked(identity string) bool {
 	}
 	username, ok := strings.CutPrefix(identity, "ice:")
 	ufrag, _, separated := strings.Cut(username, ":")
+
 	return ok && separated && s.active[ufrag]
 }
 
