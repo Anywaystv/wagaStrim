@@ -4,6 +4,8 @@
 package ingest
 
 import (
+	"fmt"
+	"net"
 	"testing"
 
 	"github.com/pion/webrtc/v4"
@@ -17,6 +19,12 @@ func TestSettingEngineRejectsInvalidPublicIP(t *testing.T) {
 	assert.Nil(t, engine)
 	assert.Nil(t, mux)
 	assert.ErrorContains(t, err, "invalid public ICE IP mapping")
+}
+
+func TestPublicICEAddressesPreservesForwardTarget(t *testing.T) {
+	addresses, err := publicICEAddresses([]string{"203.0.113.10/192.0.2.2"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"203.0.113.10/192.0.2.2"}, addresses)
 }
 
 func TestSettingEngineAdvertisesPublicIP(t *testing.T) {
@@ -39,5 +47,8 @@ func TestSettingEngineAdvertisesPublicIP(t *testing.T) {
 	require.NotNil(t, peer.LocalDescription())
 	assert.Contains(t, peer.LocalDescription().SDP, "203.0.113.10")
 	assert.Contains(t, peer.LocalDescription().SDP, "127.0.0.1")
-	assert.Contains(t, peer.LocalDescription().SDP, "typ srflx")
+	address, ok := mux.GetListenAddresses()[0].(*net.UDPAddr)
+	require.True(t, ok)
+	port := address.Port
+	assert.Contains(t, peer.LocalDescription().SDP, fmt.Sprintf("203.0.113.10 %d typ host", port))
 }

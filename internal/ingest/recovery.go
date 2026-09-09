@@ -103,6 +103,7 @@ type recoveryConn struct {
 	ready           []recoveredDatagram
 	pendingBindings map[recoveryBindingID]string
 	identities      map[string]string
+	deliveries      map[string]*deliveryBatch
 }
 
 type recoveryBindingID struct {
@@ -174,9 +175,8 @@ func (c *recoveryConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 		}
 		id.remote = c.identity(remote)
 		request := c.remember(id, buffer[:read], remote)
-		if len(request) > 0 {
-			c.sendRequest(request, remote)
-		}
+		c.sendRequest(request, remote)
+		c.sendRequest(c.deliveryReceipt(id, buffer[:read], remote, time.Now()), remote)
 
 		return read, remote, nil
 	}
@@ -285,15 +285,16 @@ func (c *recoveryConn) consumeParity(data []byte, remote net.Addr) (recoveredDat
 		c.storeGroupLocked(id, group)
 		request := makeRecoveryRequest(id.ssrc, dueRepairs(stream, now))
 		c.mu.Unlock()
-		if len(request) > 0 {
-			c.sendRequest(request, remote)
-		}
+		c.sendRequest(request, remote)
 
 		return recoveredDatagram{}, false
 	}
 }
 
 func (c *recoveryConn) sendRequest(request []byte, remote net.Addr) {
+	if len(request) == 0 {
+		return
+	}
 	if _, err := c.UDPConn.WriteTo(request, remote); err != nil {
 		c.log.Debugf("send packet recovery request: %v", err)
 	}

@@ -20,7 +20,7 @@ const pathPoll = 2 * time.Second
 // arrived on, so bytes cannot be split across paths, and the SRTP replay
 // detector discards duplicates without surfacing a count. Reporting how many
 // paths exist is honest; reporting how much each carried would not be.
-func (s *Server) watchPairs(ingestID string, peer *webrtc.PeerConnection, done <-chan struct{}) {
+func (s *Server) watchPairs(session *Session, peer *webrtc.PeerConnection, done <-chan struct{}) {
 	tick := time.NewTicker(pathPoll)
 	defer tick.Stop()
 
@@ -31,8 +31,12 @@ func (s *Server) watchPairs(ingestID string, peer *webrtc.PeerConnection, done <
 		case <-tick.C:
 			report := peer.GetStats()
 			live, total := countPairs(report)
-			s.stats.Pairs(ingestID, live, total)
-			s.stats.Link(ingestID, roundTrip(report), packetsLost(report))
+			s.mu.Lock()
+			if s.currentLocked(session) {
+				s.stats.Pairs(session.IngestID, live, total)
+				s.stats.Link(session.IngestID, roundTrip(report), packetsLost(report))
+			}
+			s.mu.Unlock()
 		}
 	}
 }

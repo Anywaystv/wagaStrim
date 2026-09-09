@@ -27,7 +27,7 @@ func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
 	engine := webrtc.SettingEngine{}
 	engine.SetIncludeLoopbackCandidate(true)
 	engine.SetICEUDPMux(mux)
-	api, err := buildAPI(&engine, []string{"h264"})
+	api, err := buildAPI(&engine, []string{"h264"}, nil)
 	require.NoError(t, err)
 	receiver, err := api.NewPeerConnection(webrtc.Configuration{})
 	require.NoError(t, err)

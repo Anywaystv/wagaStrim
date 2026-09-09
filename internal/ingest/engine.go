@@ -54,19 +54,23 @@ func NewSettingEngine(mediaPort int, publicIPs ...string) (*webrtc.SettingEngine
 	}
 
 	engine := &webrtc.SettingEngine{}
+	engine.BufferFactory = receiveBuffer
 	if len(externalIPs) > 0 {
 		// Append the public address instead of replacing the local candidates.
 		// A compositor beside wagaStrim uses its Docker or LAN candidate, while
 		// remote publishers and viewers use the forwarded public candidate.
-		// The shared mux receives on wildcard sockets, so candidate rewriting
-		// observes 0.0.0.0/:: rather than an individual interface address. Use a
-		// family-wide append rule while continuing to accept legacy external/local
-		// configuration values above.
-		if err := engine.SetICEAddressRewriteRules(webrtc.ICEAddressRewriteRule{
-			External:        externalIPs,
-			AsCandidateType: webrtc.ICECandidateTypeSrflx,
-			Mode:            webrtc.ICEAddressRewriteAppend,
-		}); err != nil {
+		// Rewrite mux host candidates so the forwarded port stays the media port.
+		// A synthetic srflx candidate allocates a separate, unforwarded socket.
+		var rules []webrtc.ICEAddressRewriteRule
+		for _, mapping := range externalIPs {
+			external, local, _ := strings.Cut(mapping, "/")
+			rules = append(rules, webrtc.ICEAddressRewriteRule{
+				External: []string{external}, Local: local,
+				AsCandidateType: webrtc.ICECandidateTypeHost,
+				Mode:            webrtc.ICEAddressRewriteAppend,
+			})
+		}
+		if err := engine.SetICEAddressRewriteRules(rules...); err != nil {
 			return nil, nil, fmt.Errorf("%w: public ICE address: %w", ErrBuildAPI, err)
 		}
 	}
@@ -104,13 +108,16 @@ func publicICEAddresses(mappings []string) ([]string, error) {
 	for _, mapping := range mappings {
 		parts := strings.Split(mapping, "/")
 		valid := len(parts) >= 1 && len(parts) <= 2
-		for _, part := range parts {
+		for i, part := range parts {
+			parts[i] = strings.TrimSpace(part)
 			valid = valid && net.ParseIP(strings.TrimSpace(part)) != nil
 		}
 		if !valid {
 			return nil, fmt.Errorf("%w: invalid public ICE IP mapping %q", ErrBuildAPI, mapping)
 		}
-		externalIPs = append(externalIPs, strings.TrimSpace(parts[0]))
+		// Keep the local half so the public candidate uses the forwarded socket,
+		// not whichever interface the mux happens to enumerate first.
+		externalIPs = append(externalIPs, strings.Join(parts, "/"))
 	}
 
 	return externalIPs, nil
