@@ -20,14 +20,22 @@ import (
 	"golang.org/x/time/rate"
 )
 
+func (c *recoveryConn) identity(remote net.Addr) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.identityLocked(remote)
+}
+
 func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
 	conn, sender := recoverySocketPair(t)
 	mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: conn})
 	t.Cleanup(func() { require.NoError(t, mux.Close()) })
 	engine := webrtc.SettingEngine{}
 	engine.SetIncludeLoopbackCandidate(true)
-	engine.SetICEUDPMux(mux)
-	api, err := buildAPI(&engine, []string{"h264"})
+	conn.conns = append(conn.conns, conn)
+	engine.SetICEUDPMux(newRecoveryMux(mux, conn.recoveryState))
+	api, err := buildAPI(&engine, []string{"h264"}, nil)
 	require.NoError(t, err)
 	receiver, err := api.NewPeerConnection(webrtc.Configuration{})
 	require.NoError(t, err)
@@ -63,6 +71,8 @@ func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
 			assert.False(t, strings.HasPrefix(conn.identity(sender.LocalAddr()), "ice:"))
 		}
 	}
+	require.NoError(t, receiver.Close())
+	assert.Empty(t, conn.authenticatedIdentity(sender.LocalAddr()), "closing ICE must revoke recovery access")
 }
 
 func TestRecoveryJoinsAuthenticatedPathsAcrossSockets(t *testing.T) {
@@ -122,6 +132,9 @@ func bindRecoveryPath(t *testing.T, conn *recoveryConn, remote net.Addr, usernam
 
 func TestRecoveryCompletedGroupsKeepOrderBounded(t *testing.T) {
 	conn, sender := recoverySocketPair(t)
+	// Exercise compaction independently of the wall-clock work budget.
+	// TestRecoveryBudgetBypassesHistoryWithoutDroppingMedia covers that limit.
+	conn.work = rate.NewLimiter(rate.Inf, 65536)
 	for cycle := range 2000 {
 		packets := make([][]byte, 8)
 		for index := range packets {
@@ -393,7 +406,7 @@ func recoverySocketPair(t *testing.T) (*recoveryConn, *net.UDPConn) {
 
 	log := logging.NewDefaultLoggerFactory().NewLogger("recovery-test")
 
-	return newRecoveryConn(server, log), sender
+	return &recoveryConn{UDPConn: server, log: log, recoveryState: newRecoveryState()}, sender
 }
 
 func authenticatedRecoverySocketPair(t *testing.T) (*recoveryConn, *net.UDPConn) {

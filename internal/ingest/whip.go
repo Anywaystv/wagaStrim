@@ -35,8 +35,11 @@ type Session struct {
 	Resource string
 	IngestID string
 
-	peer  *webrtc.PeerConnection
-	bytes atomic.Uint64
+	peer     *webrtc.PeerConnection
+	bytes    atomic.Uint64
+	failover *pathFailover
+	stopOnce sync.Once
+	ended    bool // Protected by Server.mu.
 }
 
 // Bytes reports how much media has arrived on this session.
@@ -68,6 +71,8 @@ type Server struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
 	byIngest map[string]string
+	pending  map[string]bool
+	closed   bool
 }
 
 // NewServer builds the WebRTC stack once and shares it across sessions.
@@ -79,7 +84,7 @@ func NewServer(
 	counters *stats.Registry,
 	stopped func(ingestID string),
 ) (*Server, error) {
-	api, err := buildAPI(engine, config.AllCodecs())
+	api, err := buildAPI(engine, config.AllCodecs(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -94,13 +99,14 @@ func NewServer(
 		engine:   engine,
 		sessions: map[string]*Session{},
 		byIngest: map[string]string{},
+		pending:  map[string]bool{},
 	}, nil
 }
 
 // buildAPI assembles a WebRTC stack offering exactly the named video codecs.
 // One is built per camera, because the toggles decide what the answer contains
 // and the MediaEngine is what carries that decision.
-func buildAPI(engine *webrtc.SettingEngine, codecs []string) (*webrtc.API, error) {
+func buildAPI(engine *webrtc.SettingEngine, codecs []string, arrival *arrivalFeedback) (*webrtc.API, error) {
 	media := &webrtc.MediaEngine{}
 	if err := registerCodecs(media, codecs); err != nil {
 		return nil, err
@@ -120,7 +126,7 @@ func buildAPI(engine *webrtc.SettingEngine, codecs []string) (*webrtc.API, error
 		return nil, fmt.Errorf("%w: rtcp reports: %w", ErrBuildAPI, err)
 	}
 
-	if err := webrtc.ConfigureTWCCSender(media, registry); err != nil {
+	if err := configureArrivalFeedback(media, registry, arrival); err != nil {
 		return nil, fmt.Errorf("%w: twcc: %w", ErrBuildAPI, err)
 	}
 
@@ -188,6 +194,16 @@ func registerCodecs(media *webrtc.MediaEngine, codecs []string) error {
 
 		if err := media.RegisterCodec(entry.params, webrtc.RTPCodecTypeVideo); err != nil {
 			return fmt.Errorf("%w: %s: %w", ErrBuildAPI, entry.name, err)
+		}
+		// str0m uses negotiated RTX for padding probes as well as NACK repair.
+		if err := media.RegisterCodec(webrtc.RTPCodecParameters{
+			RTPCodecCapability: webrtc.RTPCodecCapability{
+				MimeType: "video/rtx", ClockRate: 90000,
+				SDPFmtpLine: fmt.Sprintf("apt=%d", entry.params.PayloadType),
+			},
+			PayloadType: entry.params.PayloadType + 1,
+		}, webrtc.RTPCodecTypeVideo); err != nil {
+			return fmt.Errorf("%w: %s RTX: %w", ErrBuildAPI, entry.name, err)
 		}
 	}
 
@@ -293,13 +309,32 @@ func (s *Server) Publish(key, offer string) (answer string, resource string, err
 }
 
 func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (string, string, error) {
+	s.mu.Lock()
+	if s.closed || s.pending[ing.ID] {
+		s.mu.Unlock()
+
+		return "", "", fmt.Errorf("%w: %s", ErrAlreadyLive, ing.Label)
+	}
+	s.pending[ing.ID] = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.pending, ing.ID)
+		s.mu.Unlock()
+	}()
+
 	if err := s.clearPrevious(ing); err != nil {
 		return "", "", err
 	}
 
 	// The camera's own codec set, not the server's. A toggle only means anything
 	// if it changes what the answer offers.
-	api, err := buildAPI(s.engine, ing.Codecs)
+	failover := &pathFailover{}
+	engine := *s.engine
+	engine.SetICEBindingRequestHandler(failover.binding)
+	arrival := newArrivalFeedback(s.log)
+	engine.BufferFactory = arrival.buffer
+	api, err := buildAPI(&engine, ing.Codecs, arrival)
 	if err != nil {
 		return "", "", err
 	}
@@ -326,20 +361,37 @@ func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (s
 		return "", "", peerpkg.Discard(peer, fmt.Errorf("%w: %w", ErrMintResource, err), s.log)
 	}
 
-	session := &Session{Resource: resource, IngestID: ing.ID, peer: peer}
-	s.watch(ing, session, peer)
+	session := &Session{Resource: resource, IngestID: ing.ID, peer: peer, failover: failover}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
 
-	answer, err := peerpkg.Answer(peer, desc)
+		return "", "", peerpkg.Discard(peer, ErrNoSession, s.log)
+	}
+	s.sessions[resource] = session
+	s.byIngest[ing.ID] = resource
+	s.watch(ing, session, peer)
+	s.mu.Unlock()
+
+	return s.answerSession(session, desc)
+}
+
+func (s *Server) answerSession(session *Session, desc webrtc.SessionDescription) (string, string, error) {
+	answer, err := peerpkg.Answer(session.peer, desc)
 	if err != nil {
-		return "", "", peerpkg.Discard(peer, err, s.log)
+		s.stopSession(session)
+
+		return "", "", peerpkg.Discard(session.peer, err, s.log)
 	}
 
 	s.mu.Lock()
-	s.sessions[resource] = session
-	s.byIngest[ing.ID] = resource
+	current := s.currentLocked(session)
 	s.mu.Unlock()
+	if !current {
+		return "", "", peerpkg.Discard(session.peer, ErrNoSession, s.log)
+	}
 
-	return answer, resource, nil
+	return answer, session.Resource, nil
 }
 
 // clearPrevious makes room for a publisher on an ingest that already has one.
@@ -354,19 +406,20 @@ func (s *Server) clearPrevious(ing config.Ingest) error {
 	s.mu.Lock()
 	resource, live := s.byIngest[ing.ID]
 	session, known := s.sessions[resource]
+	stopping := known && session.ended
 	s.mu.Unlock()
 
 	if !live || !known {
 		return nil
 	}
 
-	if session.peer.ConnectionState() == webrtc.PeerConnectionStateConnected {
+	if !stopping && session.peer.ConnectionState() == webrtc.PeerConnectionStateConnected {
 		return fmt.Errorf("%w: %s", ErrAlreadyLive, ing.Label)
 	}
 
 	s.log.Infof("ingest %s: replacing a publisher that is %s", ing.Label, session.peer.ConnectionState())
 
-	if err := s.Teardown(resource); err != nil {
+	if err := s.Teardown(resource); err != nil && !errors.Is(err, ErrNoSession) {
 		return fmt.Errorf("%w: %w", ErrAlreadyLive, err)
 	}
 
@@ -377,6 +430,12 @@ func (s *Server) clearPrevious(ing config.Ingest) error {
 // through untouched: no depacketising, no re-encoding, no timestamp rewriting.
 func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerConnection, track *webrtc.TrackRemote) {
 	s.log.Infof("ingest %s: track %s %s", ing.Label, track.Kind(), track.Codec().MimeType)
+	s.mu.Lock()
+	if !s.currentLocked(session) {
+		s.mu.Unlock()
+
+		return
+	}
 
 	// What the publisher settled on, discovered from the negotiation rather than
 	// assumed from the toggles. Stored as the label a person reads, like every
@@ -394,6 +453,7 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 
 	out, err := s.relay.Publish(ing.ID, track.Kind(), track.Codec().RTPCodecCapability, askKeyframe)
 	if err != nil {
+		s.mu.Unlock()
 		s.log.Errorf("ingest %s: %v", ing.Label, err)
 
 		return
@@ -408,6 +468,7 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 	defer buf.Close()
 
 	s.relay.Track(ing.ID, buf)
+	s.mu.Unlock()
 	defer s.relay.Untrack(ing.ID, buf)
 
 	go relay.Feed(out, buf, func(err error) { s.log.Warnf("ingest %s: forward: %v", ing.Label, err) })
@@ -427,7 +488,11 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 
 		if track.Kind() == webrtc.RTPCodecTypeVideo {
 			late, dropped := buf.Stats()
-			s.stats.Observe(ing.ID, total, late, dropped)
+			s.mu.Lock()
+			if s.currentLocked(session) {
+				s.stats.Observe(ing.ID, total, late, dropped)
+			}
+			s.mu.Unlock()
 		}
 	}
 }
@@ -463,7 +528,7 @@ func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 		s.drain(ing, session, peer, track)
 	})
 
-	s.watchPath(ing, peer)
+	s.watchPath(ing, session, peer)
 
 	// Failed and Closed can both arrive, so the stop signal has to tolerate
 	// being fired twice. pion happens to serialize these callbacks today, which
@@ -471,24 +536,21 @@ func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 	done := make(chan struct{})
 	stopPairs := sync.OnceFunc(func() { close(done) })
 
-	go s.watchPairs(ing.ID, peer, done)
+	go s.watchPairs(session, peer, done)
 
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		s.log.Infof("ingest %s: %s", ing.Label, state)
 
 		switch state {
 		case webrtc.PeerConnectionStateConnected:
-			s.stats.Publishing(ing.ID)
+			s.mu.Lock()
+			if s.currentLocked(session) {
+				s.stats.Publishing(ing.ID)
+			}
+			s.mu.Unlock()
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			stopPairs()
-			s.stats.Stopped(ing.ID)
-			s.relay.Drop(ing.ID)
-			s.forget(session.Resource)
-
-			// Last, because it blocks while another server closes every
-			// subscriber. A phone retrying inside that window would otherwise
-			// reach clearPrevious while this ingest still names a dead session.
-			s.stopped(ing.ID)
+			s.stopSession(session)
 		default:
 		}
 	})
@@ -498,20 +560,27 @@ func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 // moves a phone from Wi-Fi to cellular without a reconnect, and from outside
 // the process that is indistinguishable from nothing happening, so the move has
 // to be surfaced or the feature is invisible.
-func (s *Server) watchPath(ing config.Ingest, peer *webrtc.PeerConnection) {
+func (s *Server) watchPath(ing config.Ingest, session *Session, peer *webrtc.PeerConnection) {
 	transport := peer.SCTP().Transport().ICETransport()
 	if transport == nil {
 		return
 	}
 
 	transport.OnSelectedCandidatePairChange(func(pair *webrtc.ICECandidatePair) {
+		if session.failover != nil {
+			session.failover.selected.Store(pair)
+		}
 		if pair == nil || pair.Local == nil || pair.Remote == nil {
 			return
 		}
 
 		path := describePair(pair)
 		s.log.Infof("ingest %s: now on %s", ing.Label, path)
-		s.stats.Path(ing.ID, path)
+		s.mu.Lock()
+		if s.currentLocked(session) {
+			s.stats.Path(ing.ID, path)
+		}
+		s.mu.Unlock()
 	})
 }
 
@@ -566,15 +635,12 @@ func (s *Server) CloseIngest(ingestID string) {
 
 // Teardown ends a session named by its WHIP resource id.
 func (s *Server) Teardown(resource string) error {
-	s.mu.Lock()
-	session, ok := s.sessions[resource]
-	s.mu.Unlock()
-
+	session, ok := s.session(resource)
 	if !ok {
 		return ErrNoSession
 	}
 
-	s.forget(resource)
+	s.stopSession(session)
 
 	if err := session.peer.Close(); err != nil {
 		return fmt.Errorf("%w: %w", ErrNoSession, err)
@@ -598,25 +664,49 @@ func (s *Server) forget(resource string) {
 	defer s.mu.Unlock()
 
 	if session, ok := s.sessions[resource]; ok {
-		delete(s.byIngest, session.IngestID)
+		if s.byIngest[session.IngestID] == resource {
+			delete(s.byIngest, session.IngestID)
+		}
 		delete(s.sessions, resource)
 	}
+}
+
+// The camera remains owned until relay/subscriber cleanup completes. A retry
+// can wait in stopOnce, but no server mutex is held while closing subscribers.
+func (s *Server) stopSession(session *Session) {
+	session.stopOnce.Do(func() {
+		s.mu.Lock()
+		owned := s.currentLocked(session)
+		session.ended = true
+		s.mu.Unlock()
+		if owned {
+			s.stats.Stopped(session.IngestID)
+			s.relay.Drop(session.IngestID)
+			s.stopped(session.IngestID)
+		}
+		s.forget(session.Resource)
+	})
+}
+
+func (s *Server) currentLocked(session *Session) bool {
+	return !session.ended && s.byIngest[session.IngestID] == session.Resource &&
+		s.sessions[session.Resource] == session
 }
 
 // Close ends every live session.
 func (s *Server) Close() {
 	s.mu.Lock()
+	s.closed = true
 	live := make([]*Session, 0, len(s.sessions))
 
 	for _, session := range s.sessions {
 		live = append(live, session)
 	}
 
-	s.sessions = map[string]*Session{}
-	s.byIngest = map[string]string{}
 	s.mu.Unlock()
 
 	for _, session := range live {
+		s.stopSession(session)
 		if err := session.peer.Close(); err != nil {
 			s.log.Warnf("close session: %v", err)
 		}

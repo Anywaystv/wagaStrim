@@ -112,4 +112,4 @@ but support depends on your sender and receiver. New cameras start at 2000 ms
 delay, adjustable from 0 to 10000 ms. Experimental Waga bonding and packet recovery need
 a compatible sender; ordinary WHIP senders can still connect.
 
-[Architecture and test notes](PLAN.md) | [MIT license](LICENSES/MIT.txt)
+[Transport and test notes](docs/TRANSPORT.md) | [MIT license](LICENSES/MIT.txt)

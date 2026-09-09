@@ -251,17 +251,6 @@ func (b *Buffer) wake() {
 	b.ready.Signal()
 }
 
-// depth is how far ahead of now the newest queued packet is scheduled. It sits
-// at roughly the target while the link is healthy. Growing past target plus
-// hysteresis means media is arriving faster than its timestamps say it should,
-// which no amount of waiting will resolve.
-func (b *Buffer) depth() time.Duration {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	return b.depthLocked()
-}
-
 func (b *Buffer) depthLocked() time.Duration {
 	newest := time.Duration(0)
 

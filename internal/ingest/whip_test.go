@@ -85,6 +85,9 @@ func TestPublisherMediaReachesTheIngest(t *testing.T) {
 	answer, resource, err := srv.Publish(ing.SenderKey, offerFrom(t, peer))
 	require.NoError(t, err)
 	require.NotEmpty(t, resource)
+	require.Contains(t, answer, "rtx/90000")
+	require.Contains(t, answer, "apt=")
+	require.Contains(t, answer, "transport-cc")
 
 	require.NoError(t, peer.SetRemoteDescription(
 		webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}))
