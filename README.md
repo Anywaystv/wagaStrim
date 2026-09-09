@@ -1,8 +1,13 @@
 ![WagaStrim banner](wagastrimheader.png)
 
+# WagaStrim (Experimental)
+
 Send a phone camera to OBS over WHIP and WHEP. WagaStrim runs on your server or computer,
 buffers the incoming stream, and forwards it without re-encoding.
 Built with [Pion WebRTC](https://github.com/pion/webrtc).
+
+WagaStrim is experimental. Test your sender, receiver and network before relying
+on it for a live broadcast.
 
 ## Install
 
@@ -21,16 +26,16 @@ Start it with the command for your system:
 | macOS / Linux | `./bin/wagastrim -headless` |
 | Windows PowerShell | `.\bin\wagastrim.exe -headless` |
 
-Open **http://127.0.0.1:7330** on the same machine (use an SSH tunnel for a remote server).
-Keep the terminal open while streaming;
-Ctrl+C stops the server. This build uses the web settings page, without a tray icon.
+Open **http://127.0.0.1:7330** on the same machine, or use an SSH tunnel for a remote
+server. Keep the terminal open while streaming; Ctrl+C stops WagaStrim.
+This build uses a web dashboard instead of a tray icon.
 
 ## Connect your camera
 
 1. Add a camera in WagaStrim. Start with **H.264 video and Opus audio** in Moblin.
-2. Copy the **sender link** into Moblin. On the same Wi-Fi, replace the link's
+2. Copy the **sender link** (WHIP) into Moblin. On the same Wi-Fi, replace the link's
    host with a local IP shown by **Check**, keeping its port and key.
-3. Copy the **receiver link** into an OBS **Browser Source**. Enable
+3. Copy the **receiver link** (the WHEP preview page) into an OBS **Browser Source**. Enable
    **Control audio via OBS** and disable **Shutdown source when not visible**.
 
 Allow these ports through your server or computer's firewall. For a phone on cellular,
@@ -45,13 +50,16 @@ The settings page on TCP 7330 stays local; do not forward it. **Check** finds
 addresses but cannot confirm port forwarding. Test with phone Wi-Fi turned off.
 Keep your stream keys and public IP off your broadcast.
 
-## Configure `config.json`
+## Optional configuration
 
-Start WagaStrim once to create the file; its path appears in the startup log.
-Stop WagaStrim before editing. Merge the fields below into the existing JSON
-object, keeping your other settings and `ingests`. Save and restart to apply edits.
+WagaStrim creates `config.json` on first start and logs its location. Stop the
+server before editing it. Add the fields below to the existing JSON object,
+preserving your other settings and `ingests`, then save and restart.
 
-### Control access (optional)
+### Control API
+
+The control API lets another app manage cameras and settings. It is not needed
+to publish from Moblin or watch a stream.
 
 In **Reachability**, click **Generate control token**, save it in a password
 manager, then restart. Or set a password-manager-generated secret of at least
@@ -65,22 +73,22 @@ manager, then restart. Or set a password-manager-generated secret of at least
 }
 ```
 
-The connecting app sends the same secret as `Authorization: Bearer YOUR_SECRET`
-to the control API on TCP 7333. This is separate from the camera's stream key;
-Moblin does not need it. Without `controlToken`, the control API stays off.
+The connecting app sends the secret as `Authorization: Bearer YOUR_SECRET`
+to TCP 7333. This token is separate from camera stream keys.
+Without `controlToken`, the control API stays off.
 With a token, remote dashboards are allowed by default. Set `controlRemote: false`
 to refuse internet clients. Restrict TCP 7333 by firewall and use HTTPS or a VPN.
 
 The **Local access** and **Remote access** dashboard toggles apply immediately.
 Both off means this machine only. They do not change streaming/preview access or
 open firewall/router ports. Set `controlBind` to a LAN or VPN IP to restrict the
-listener. The settings webpage remains local on TCP 7330.
+listener.
 
-Open **API setup guide** in Reachability for token creation, camera key generation,
-WHIP/WHEP/preview links and request examples. The guide is included offline at
+Click **API Guide** to the right of the live-status indicator in the top bar for
+token setup, camera keys, streaming links and request examples. It is available offline at
 `http://127.0.0.1:7330/api-guide` ([source](docs/API.html)).
 
-### HTTPS (optional)
+### HTTPS
 
 HTTP is the default and exposes keys/tokens to anyone observing the connection.
 For HTTPS, add these fields using your hostname and trusted certificate files:
@@ -108,8 +116,13 @@ forwarded unchanged and needs an AAC-capable WHEP receiver; the built-in player
 and OBS Browser Source need **Opus**. No audio converter or FFmpeg is included.
 
 H.264 is the simplest video choice. H.265 and AV1 can be enabled per camera,
-but support depends on your sender and receiver. New cameras start at 2000 ms
-delay, adjustable from 0 to 10000 ms. Experimental Waga bonding and packet recovery need
-a compatible sender; ordinary WHIP senders can still connect.
+but both the sender and receiver must support the chosen codec over WebRTC.
+
+New cameras start with a 2000 ms buffer, adjustable from 0 to 10000 ms. More
+buffer can absorb short interruptions at the cost of extra viewing delay.
+It cannot compensate for a connection that is consistently too slow.
+
+Optional Waga bonding and packet recovery require a compatible sender, such as
+Moblin with WagaWebRTC. Ordinary WHIP senders can connect without those features.
 
 [Transport and test notes](docs/TRANSPORT.md) | [MIT license](LICENSES/MIT.txt)
