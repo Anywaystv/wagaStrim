@@ -6,6 +6,7 @@ package ingest
 import (
 	"encoding/binary"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -205,8 +206,7 @@ func (c *recoveryConn) popReady() (recoveredDatagram, bool) {
 	}
 
 	datagram := c.ready[0]
-	copy(c.ready, c.ready[1:])
-	c.ready = c.ready[:len(c.ready)-1]
+	c.ready = slices.Delete(c.ready, 0, 1)
 
 	return datagram, true
 }
@@ -374,18 +374,14 @@ func (c *recoveryConn) storePacketLocked(id recoveryPacketID, data []byte) {
 		c.packetHead++
 	}
 	if c.packetHead >= recoveryHistorySize {
-		c.packetOrder = append(c.packetOrder[:0], c.packetOrder[c.packetHead:]...)
+		c.packetOrder = slices.Delete(c.packetOrder, 0, c.packetHead)
 		c.packetHead = 0
 	}
 }
 
 func (c *recoveryConn) recoverPendingLocked(arrived recoveryPacketID, remote net.Addr) {
 	for id, group := range c.groups {
-		contains := false
-		for _, entry := range group.entries {
-			contains = contains || entry.id == arrived
-		}
-		if !contains {
+		if !slices.ContainsFunc(group.entries, func(entry recoveryEntry) bool { return entry.id == arrived }) {
 			continue
 		}
 
@@ -463,7 +459,7 @@ func (c *recoveryConn) storeGroupLocked(id recoveryGroupID, group recoveryGroup)
 		c.groupHead++
 	}
 	if c.groupHead >= recoveryGroupLimit {
-		c.groupOrder = append(c.groupOrder[:0], c.groupOrder[c.groupHead:]...)
+		c.groupOrder = slices.Delete(c.groupOrder, 0, c.groupHead)
 		c.groupHead = 0
 	}
 }

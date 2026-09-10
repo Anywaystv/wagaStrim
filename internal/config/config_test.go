@@ -4,6 +4,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -76,6 +77,51 @@ func TestSaveIsOwnerOnly(t *testing.T) {
 	info, err := os.Stat(cfg.path)
 	require.NoError(t, err)
 	assert.Equal(t, "-rw-------", info.Mode().String(), "keys live in this file")
+}
+
+func TestFailedSettingsSaveRollsBack(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*Config) error
+	}{
+		{"delay", func(c *Config) error { return c.SetDelay("middle", 3000) }},
+		{"group", func(c *Config) error { return c.SetSyncGroup("middle", "rig") }},
+		{"label", func(c *Config) error { return c.SetLabel("middle", "renamed") }},
+		{"codecs", func(c *Config) error { return c.SetCodecs("middle", []string{CodecH265}) }},
+		{"remove first", func(c *Config) error { return c.RemoveIngest("first") }},
+		{"remove middle", func(c *Config) error { return c.RemoveIngest("middle") }},
+		{"remove last", func(c *Config) error { return c.RemoveIngest("last") }},
+		{"host", func(c *Config) error { return c.SetPublicHost("192.0.2.1") }},
+		{"autostart", func(c *Config) error { return c.SetAutostart(true) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{path: t.TempDir() + "/config.json", Ingests: []Ingest{
+				pushed("first", 'a'), pushed("middle", 'c'), pushed("last", 'e'),
+			}}
+			require.NoError(t, cfg.Save())
+			before, err := json.Marshal(cfg)
+			require.NoError(t, err)
+			path := cfg.path
+			// A file cannot be renamed over a directory, even when run as root.
+			cfg.path = t.TempDir()
+			require.ErrorIs(t, tc.change(cfg), ErrWriteConfig)
+			cfg.path = path
+			after, err := json.Marshal(cfg)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(before), string(after), "failed saves must not change memory")
+			saved, err := os.ReadFile(cfg.Path())
+			require.NoError(t, err)
+			assert.JSONEq(t, string(before), string(saved))
+
+			require.NoError(t, tc.change(cfg), "retry after storage recovers")
+			after, err = json.Marshal(cfg)
+			require.NoError(t, err)
+			assert.NotEqual(t, string(before), string(after))
+			saved, err = os.ReadFile(cfg.Path())
+			require.NoError(t, err)
+			assert.JSONEq(t, string(after), string(saved))
+		})
+	}
 }
 
 func TestSaveDoesNotReusePredictableTemporaryFile(t *testing.T) {

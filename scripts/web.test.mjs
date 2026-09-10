@@ -18,10 +18,12 @@ function element(tag = "span") {
   };
 }
 
+const dashboardNodes = () => Object.fromEntries(
+  [...read("internal/ui/web/index.html").matchAll(/\bid="([^"]+)"/g)].map(([, id]) => [id, element()]),
+);
+
 test("reachability stays visible and refreshes masked and visible links", async () => {
-  const nodes = Object.fromEntries(
-    ["check", "reach", "reach-status", "total", "media-status", "autostart", "autostart-note"].map(id => [id, element()]),
-  );
+  const nodes = dashboardNodes();
   const links = [true, false].map(masked => ({
     dataset: { secret: `${masked ? "whip" : "http"}://127.0.0.1:7331/${masked ? "whip/s_test" : "player/r_test"}` },
     textContent: masked ? "masked" : "",
@@ -34,7 +36,7 @@ test("reachability stays visible and refreshes masked and visible links", async 
       addEventListener() {},
       getElementById: id => nodes[id],
       createElement: element,
-      querySelectorAll: selector => selector === ".secret[data-secret]" ? links : [],
+      querySelectorAll: selector => selector === ".camera-card .secret[data-secret]" ? links : [],
     },
     fetch: async path => {
       if (path === "/api/reachability" && fail) throw new Error("offline");
@@ -54,13 +56,16 @@ test("reachability stays visible and refreshes masked and visible links", async 
     const pending = nodes.check.click({ target: nodes.check });
     assert.equal(nodes["reach-status"].textContent, "Checking");
     await pending;
-    assert.equal(nodes["reach-status"].textContent, host ? "Address checked." : "No public IP found.");
+    assert.equal(nodes["reach-status"].textContent, host
+      ? "Ports not verified. Test on mobile data." : "No public IP found. Try a local IP.");
     const rows = nodes.reach.children;
     const bold = rows.flatMap(row => row.children.filter(child => child.tag === "strong").map(child => child.textContent));
     assert.ok(bold.includes("192.168.1.2"));
     assert.ok(bold.includes("TCP 7331"));
-    assert.ok(bold.includes("UDP 7332"));
-    assert.equal(rows.at(-1).children[0], "<img src=x onerror=alert(1)>");
+    assert.ok(rows.at(-2).children[2].includes("UDP 7332"));
+    const help = rows.at(-1).children[1];
+    assert.ok(help.textContent.includes("<img src=x onerror=alert(1)>"));
+    assert.equal(help.children.length, 0);
     assert.equal(links[0].textContent, "masked");
     assert.equal(new URL(links[0].dataset.secret).pathname, "/whip/s_test");
     assert.equal(links[1].textContent, links[1].dataset.secret);
@@ -87,9 +92,7 @@ test("camera summary is in the header and reachability has a privacy warning", (
 });
 
 test("header media status follows live and idle stats", async () => {
-  const nodes = Object.fromEntries(
-    ["check", "reach", "reach-status", "total", "media-status", "autostart", "autostart-note"].map(id => [id, element()]),
-  );
+  const nodes = dashboardNodes();
   let stats = {};
   const context = {
     document: { addEventListener() {}, getElementById: id => nodes[id], querySelectorAll: () => [] },

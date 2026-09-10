@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,8 +48,7 @@ func (s *Session) Bytes() uint64 {
 	return s.bytes.Load()
 }
 
-// add records a packet and returns the running total, so the caller reporting
-// it does not read the counter back through a second lock.
+// add returns the running total without a second atomic read.
 func (s *Session) add(count int) uint64 {
 	return s.bytes.Add(uint64(count)) //nolint:gosec // count comes from a read length and is never negative.
 }
@@ -62,10 +62,8 @@ type Server struct {
 	relay  *relay.Relay
 	stats  *stats.Registry
 
-	// stopped disconnects the subscribers of a publisher that has ended. A
-	// subscriber is bound to the track object it was handed, and the publisher
-	// gets a new one when it comes back, so a subscriber left attached sits
-	// there connected and frozen for good. The player page reconnects itself.
+	// Disconnect subscribers when their publisher ends: a replacement gets
+	// new track objects. The player reconnects rather than staying frozen.
 	stopped func(ingestID string)
 
 	mu       sync.Mutex
@@ -75,7 +73,7 @@ type Server struct {
 	closed   bool
 }
 
-// NewServer builds the WebRTC stack once and shares it across sessions.
+// NewServer builds the shared egress API; publishers get their own API during negotiation.
 func NewServer(
 	cfg *config.Config,
 	log logging.LeveledLogger,
@@ -103,24 +101,15 @@ func NewServer(
 	}, nil
 }
 
-// buildAPI assembles a WebRTC stack offering exactly the named video codecs.
-// One is built per camera, because the toggles decide what the answer contains
-// and the MediaEngine is what carries that decision.
+// buildAPI assembles a WebRTC stack with the camera's allowed video codecs.
 func buildAPI(engine *webrtc.SettingEngine, codecs []string, arrival *arrivalFeedback) (*webrtc.API, error) {
 	media := &webrtc.MediaEngine{}
 	if err := registerCodecs(media, codecs); err != nil {
 		return nil, err
 	}
 
-	// Reports and TWCC, but deliberately not RegisterDefaultInterceptors: that
-	// helper also calls ConfigureNack, and the pair added below would then be the
-	// second generator and the second responder in the chain rather than the
-	// only ones. Two responders answer the same NACK, so every packet a receiver
-	// asked for was sent to it twice -- measured on a live camera as 2.6 sends
-	// per packet, 16 Mbps of egress for a 6 Mbps stream, video only, because
-	// NACK is not negotiated for audio. Configuring the two halves by hand is
-	// what keeps nackHistory below meaningful: the helper's own pair is fixed at
-	// pion's default depth.
+	// RegisterDefaultInterceptors would add a second NACK pair with default
+	// history, duplicating retransmissions. Register each interceptor once.
 	registry := &interceptor.Registry{}
 	if err := webrtc.ConfigureRTCPReports(registry); err != nil {
 		return nil, fmt.Errorf("%w: rtcp reports: %w", ErrBuildAPI, err)
@@ -137,8 +126,7 @@ func buildAPI(engine *webrtc.SettingEngine, codecs []string, arrival *arrivalFee
 
 	registry.Add(generator)
 
-	// The same depth outbound: a subscriber has to be able to ask for anything
-	// the buffer still holds, or the extra history on the inbound side is wasted.
+	// Match outbound history so subscribers can recover buffered packets too.
 	responder, err := nack.NewResponderInterceptor(nack.ResponderSize(nackHistory))
 	if err != nil {
 		return nil, fmt.Errorf("%w: nack responder: %w", ErrBuildAPI, err)
@@ -146,9 +134,7 @@ func buildAPI(engine *webrtc.SettingEngine, codecs []string, arrival *arrivalFee
 
 	registry.Add(responder)
 
-	// Outbound, like the responder above: a subscriber is told how much to hold
-	// before it plays anything. See playout.go for why the page cannot be the
-	// only place that asks.
+	// Request receiver buffering even when the subscriber is not our player page.
 	if err := media.RegisterHeaderExtension(
 		webrtc.RTPHeaderExtensionCapability{URI: playoutDelayURI},
 		webrtc.RTPCodecTypeVideo,
@@ -166,29 +152,12 @@ func buildAPI(engine *webrtc.SettingEngine, codecs []string, arrival *arrivalFee
 	), nil
 }
 
-// registerCodecs registers everything the relay can carry. Which of them an
-// ingest actually offers is decided per camera when the answer is built.
-//
-// H.265 and AV1 sit on pion's own default payload types; H.264 is on 96, which
-// pion gives to VP8 and which is what the phone apps tested here send. None of
-// it is load bearing, because an answer carries the payload types the offer
-// named, not these.
-//
-// The fmtp lines are the same story and it is worth saying out loud, because
-// Opus below carries none and that reads like an oversight against pion's own
-// default of "minptime=10;useinbandfec=1". An answer's fmtp also comes from the
-// offer, and wagaStrim only ever answers, so what is written here never reaches
-// the wire. Adding useinbandfec here would not switch in-band FEC on: the
-// publisher already sees it, because it is the parameter it sent us. Measured
-// both ways on Publish, 2026-08-30.
+// registerCodecs enables the camera's video codecs and supported audio codecs.
+// Negotiated payload types follow the offer. Opus's offered in-band FEC
+// parameters are preserved in the answer; see TestPublisherOpusInBandFECIsPreservedInAnswer.
 func registerCodecs(media *webrtc.MediaEngine, codecs []string) error {
-	wanted := map[string]bool{}
-	for _, name := range codecs {
-		wanted[name] = true
-	}
-
 	for _, entry := range videoCodecs() {
-		if !wanted[entry.name] {
+		if !slices.Contains(codecs, entry.name) {
 			continue
 		}
 
@@ -327,8 +296,7 @@ func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (s
 		return "", "", err
 	}
 
-	// The camera's own codec set, not the server's. A toggle only means anything
-	// if it changes what the answer offers.
+	// Publisher-specific codecs, feedback, and failover state.
 	failover := &pathFailover{}
 	engine := *s.engine
 	engine.SetICEBindingRequestHandler(failover.binding)
@@ -352,10 +320,8 @@ func (s *Server) negotiate(ing config.Ingest, desc webrtc.SessionDescription) (s
 		}
 	}
 
-	// The resource id is minted before the callbacks are wired, because they
-	// name the session by it. Filling it in afterwards left a window where a
-	// connection that failed early forgot a session called nothing, and the
-	// ingest stayed marked as having a publisher.
+	// Assign the resource before wiring callbacks so early failures can remove
+	// the correct session.
 	resource, err := config.NewResourceKey()
 	if err != nil {
 		return "", "", peerpkg.Discard(peer, fmt.Errorf("%w: %w", ErrMintResource, err), s.log)
@@ -394,14 +360,8 @@ func (s *Server) answerSession(session *Session, desc webrtc.SessionDescription)
 	return answer, session.Resource, nil
 }
 
-// clearPrevious makes room for a publisher on an ingest that already has one.
-//
-// A phone that loses its link does not tell us; ICE takes tens of seconds to
-// call the old session failed, and the phone is retrying long before that. A
-// flat refusal for that whole window is the reconnect a streamer notices, so a
-// session that is no longer connected is ended here and the new offer proceeds.
-// A session that is genuinely still carrying media is not: two publishers on one
-// camera would fight over it, and the second one is a mistake worth naming.
+// clearPrevious replaces disconnected or stopping publishers so retries need
+// not wait for ICE failure. A connected publisher retains ownership.
 func (s *Server) clearPrevious(ing config.Ingest) error {
 	s.mu.Lock()
 	resource, live := s.byIngest[ing.ID]
@@ -437,15 +397,12 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 		return
 	}
 
-	// What the publisher settled on, discovered from the negotiation rather than
-	// assumed from the toggles. Stored as the label a person reads, like every
-	// other string in a snapshot. Only the video track has one worth naming.
+	// Report the negotiated video codec, not the configured preference.
 	if track.Kind() == webrtc.RTPCodecTypeVideo {
 		s.stats.Codec(ing.ID, config.CodecLabelOf(track.Codec().MimeType))
 	}
 
-	// Video only. A PLI naming an audio SSRC asks for a picture from a stream
-	// that has none, and the buffer below calls this on every drift correction.
+	// A PLI must name the video SSRC, never the audio SSRC.
 	var askKeyframe func()
 	if track.Kind() == webrtc.RTPCodecTypeVideo {
 		askKeyframe = func() { s.requestKeyframe(ing, peer, track.SSRC()) }
@@ -505,11 +462,8 @@ func (s *Server) requestKeyframe(ing config.Ingest, peer *webrtc.PeerConnection,
 	}
 }
 
-// drainRTCP consumes the publisher's RTCP. Nothing acts on it here, but pion
-// only moves RTCP when somebody reads it, and the report interceptor is what
-// reads through this call: unread, it never sees a Sender Report, so every
-// Receiver Report we send the phone carries a zero last-SR and zero delay, and
-// the phone cannot measure the round trip it is adapting its bitrate against.
+// drainRTCP drives the report interceptor so Sender Reports contribute to
+// Receiver Reports and the publisher can measure RTT.
 func drainRTCP(receiver *webrtc.RTPReceiver) {
 	buf := make([]byte, 1500)
 
@@ -530,9 +484,7 @@ func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 
 	s.watchPath(ing, session, peer)
 
-	// Failed and Closed can both arrive, so the stop signal has to tolerate
-	// being fired twice. pion happens to serialize these callbacks today, which
-	// is not a property worth depending on.
+	// Failed and Closed can both arrive; stop the watcher only once.
 	done := make(chan struct{})
 	stopPairs := sync.OnceFunc(func() { close(done) })
 
@@ -556,10 +508,7 @@ func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 	})
 }
 
-// watchPath reports which candidate pair is carrying the stream. Renomination
-// moves a phone from Wi-Fi to cellular without a reconnect, and from outside
-// the process that is indistinguishable from nothing happening, so the move has
-// to be surfaced or the feature is invisible.
+// watchPath reports candidate changes, including renomination without reconnecting.
 func (s *Server) watchPath(ing config.Ingest, session *Session, peer *webrtc.PeerConnection) {
 	transport := peer.SCTP().Transport().ICETransport()
 	if transport == nil {
@@ -584,9 +533,7 @@ func (s *Server) watchPath(ing config.Ingest, session *Session, peer *webrtc.Pee
 	})
 }
 
-// describePair names a path in the terms a streamer thinks in. The candidate
-// type is what says whether traffic is going direct or through a relay, which
-// is the difference between working and working badly.
+// describePair labels the selected route for the dashboard.
 func describePair(pair *webrtc.ICECandidatePair) string {
 	kind := "direct"
 
@@ -605,9 +552,7 @@ func describePair(pair *webrtc.ICECandidatePair) string {
 	return fmt.Sprintf("%s over %s via %s", kind, pair.Remote.Protocol, pair.Local.Address)
 }
 
-// isPrivate reports whether an address is on a local network rather than the
-// internet, so a phone on the same Wi-Fi is not described as a direct hit from
-// outside.
+// isPrivate includes loopback and link-local addresses in the local-network label.
 func isPrivate(address string) bool {
 	addr, err := netip.ParseAddr(address)
 	if err != nil {

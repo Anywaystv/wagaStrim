@@ -12,17 +12,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// ProbeSocketBuffer reports the receive buffer the kernel actually grants for
-// the size we ask for.
-//
-// The kernel silently clamps to net.core.rmem_max on Linux and
-// kern.ipc.maxsockbuf on macOS, and SetReadBuffer returns nil either way. A
-// buffer far smaller than requested drops packets in the kernel before the
-// application ever sees them, which is the single most confusing source of loss
-// on a self hosted ingest: the stream looks broken and nothing logs an error.
-//
-// A throwaway socket is probed rather than the mux's own, because the mux does
-// not expose its connections. Same kernel, same limit.
+// ProbeSocketBuffer checks the granted size on a temporary socket because the
+// mux does not expose its sockets. SetReadBuffer can succeed despite clamping
+// to net.core.rmem_max (Linux) or kern.ipc.maxsockbuf (macOS).
 func ProbeSocketBuffer(want int) (granted int, err error) {
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{})
 	if err != nil {

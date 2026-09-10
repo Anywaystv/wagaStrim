@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2026 wagaStrim contributors
 // SPDX-License-Identifier: MIT
 
-// Package stats keeps a short rolling view of each ingest. It exists so the UI
-// can say what is wrong in a sentence, not so it can draw a graph.
+// Package stats tracks ingest health and recent problems for the dashboard.
 package stats
 
 import (
@@ -28,9 +27,7 @@ type Snapshot struct {
 	Path     string `json:"path,omitempty"`
 	Switches int    `json:"switches"`
 
-	// Codec is what the publisher and the server actually agreed on, not what
-	// the camera permits. The toggles say what may be offered; this says what
-	// turned up, which is the only one of the two a person can act on.
+	// Codec is the negotiated codec, not the configured list of allowed codecs.
 	Codec string `json:"codec,omitempty"`
 
 	// RTT on the nominated pair, and packets the receiver never got. Both come
@@ -57,9 +54,7 @@ type counter struct {
 	pathsLive  int
 	pathsTotal int
 
-	// Renomination re-homes a stream onto a better candidate without a
-	// reconnect. Counting the moves is how anyone can tell it did anything: the
-	// stream simply keeps working, which looks identical to nothing happening.
+	// Count candidate changes even when they do not require a reconnect.
 	switches int
 
 	rtt     int
@@ -70,12 +65,8 @@ type counter struct {
 	late    uint64
 	dropped uint64
 
-	// Advice is driven by recent movement, not the lifetime total. A single late
-	// packet an hour ago must not pin "raise the delay" on screen forever. The
-	// two are tracked apart because they say different things: late packets mean
-	// the target is tight, dropped ones mean the buffer gave up and skipped, and
-	// a camera that skipped once at a lower target must not keep being told it is
-	// skipping now.
+	// Expire advice independently for late packets and skips; lifetime counts
+	// must not keep an old problem visible after recovery.
 	lastMoved   time.Time
 	prevBad     uint64
 	lastSkipped time.Time
@@ -129,9 +120,7 @@ func (r *Registry) Path(ingestID, path string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// A candidate pair is selected before the connection reports itself
-	// connected, so the counter may not exist yet. Dropping the first path here
-	// is how the whole feature silently reported nothing.
+	// Pair selection can precede Publishing, so create the counter if needed.
 	entry, ok := r.counters[ingestID]
 	if !ok {
 		entry = &counter{}
@@ -198,20 +187,15 @@ func (r *Registry) Observe(ingestID string, total, late, dropped uint64) {
 	}
 
 	now := time.Now()
+	entry.total = total
+	entry.late = late
+	entry.dropped = dropped
 
 	// Sampling every packet buys no accuracy over a five second average and
 	// churns the slice thousands of times a second.
 	if len(entry.samples) > 0 && now.Sub(entry.samples[len(entry.samples)-1].at) < sampleEvery {
-		entry.total = total
-		entry.late = late
-		entry.dropped = dropped
-
 		return
 	}
-
-	entry.total = total
-	entry.late = late
-	entry.dropped = dropped
 
 	if bad := late + dropped; bad > entry.prevBad {
 		entry.prevBad = bad
@@ -286,10 +270,7 @@ func bitrate(samples []sample, now time.Time) int {
 
 	first, last := samples[0], samples[len(samples)-1]
 
-	// A publisher whose media stopped while its ICE connection stayed up would
-	// otherwise report its last rate forever. Live with no bitrate is precisely
-	// how a watcher tells a dead camera from a working one, so the window has to
-	// close on wall clock rather than only on the next packet.
+	// Expire the rate on wall time even if ICE stays connected without media.
 	if now.Sub(last.at) > window {
 		return 0
 	}

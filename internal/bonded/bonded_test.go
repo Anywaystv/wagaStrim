@@ -1,12 +1,8 @@
 // SPDX-FileCopyrightText: 2026 wagaStrim contributors
 // SPDX-License-Identifier: MIT
 
-// Package bonded exercises the receive half of bonding against real sockets. A
-// sender that sprays one SRTP stream across several local candidates has to
-// land as one merged, deduplicated stream, and that claim is the reason this
-// project has no bonding code of its own. Nothing here ships: it stands in for
-// the spraying sender that does not exist yet, so the receive path is known to
-// be ready when one does.
+// Package bonded verifies that SRTP sent over multiple real sockets reaches
+// the subscriber as one merged, deduplicated stream.
 package bonded
 
 import (
@@ -104,8 +100,7 @@ func outboundIP(t *testing.T) net.IP {
 	return addr.IP
 }
 
-// sender builds a publisher whose media leaves by every candidate it gathered,
-// which is the sender pion does not have and Moblin does not implement.
+// sender builds a test publisher that routes media over its gathered candidates.
 func sender(t *testing.T, mode routing) (*webrtc.PeerConnection, *webrtc.TrackLocalStaticRTP, *paths) {
 	t.Helper()
 

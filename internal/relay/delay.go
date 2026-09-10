@@ -11,13 +11,8 @@ import (
 	"github.com/pion/rtp"
 )
 
-// Buffer holds media for a fixed interval before releasing it, so a packet that
-// arrives late or by retransmission can still make its slot.
-//
-// Release is scheduled from the RTP timestamp, never from arrival. Arrival-based
-// release would only add a constant delay: a gap in arrivals would reappear as a
-// gap in output. Timestamp-based release means a packet delayed by half a second
-// still lands in the right place, and the output has no hole at all.
+// Buffer schedules media by RTP timestamp plus a fixed delay. Arrival-based
+// scheduling would reproduce network gaps instead of absorbing late packets.
 type Buffer struct {
 	mu     sync.Mutex
 	ready  *sync.Cond
@@ -34,27 +29,15 @@ type Buffer struct {
 	baseRTP  uint32
 	baseWall time.Time
 
-	// catchUp drops video until the next keyframe, which is how a buffer that
-	// has grown past its target is drained. See Depth.
+	// catchUp drops video until a keyframe allows the playout clock to reset.
 	catchUp  bool
 	keyframe func()
 
 	// arrived counts pushes, which is what orders packets that are due together.
 	arrived uint64
 
-	// Pacing. Every packet of a frame carries one timestamp, so without this the
-	// whole frame becomes due at the same instant and leaves as one burst -- a
-	// measured 96 packets back to back, then nothing for 33ms. A receiver on a
-	// shared radio queues that clump, drains it late, and plays the result frame
-	// by frame.
-	//
-	// The spread is a frame's own, not a bitrate's. Pacing against a measured
-	// byte rate smoothed the packets and cost the thing that mattered more: a
-	// keyframe is several times the size of the frames around it, so at an
-	// average rate it took more than a frame interval to leave and pushed
-	// everything behind it out of step -- frame gaps with a 63ms p95 against a
-	// 33ms target. Spacing a group across the interval to the next frame keeps
-	// the cadence the timestamps already describe.
+	// Spread each frame across its interval to avoid packet bursts. Byte-rate
+	// pacing would let large keyframes delay the frames behind them.
 	group    time.Time     // the playAt of the group being drained
 	groupGap time.Duration // spacing between that group's packets
 	frameGap time.Duration // interval between frames, learned from their playout times
@@ -64,34 +47,17 @@ type Buffer struct {
 	dropped uint64
 }
 
-// hysteresis is deliberately wide. A link recovering from a dropout delivers a
-// burst, and a narrow margin would read that as drift and skip a keyframe at the
-// exact moment the picture came back.
-//
-// minMargin keeps that reasoning from swallowing a low target whole. A
-// deployment running at a few hundred milliseconds has no cellular burst to
-// absorb, and two seconds of slack there is several times the target, so drift
-// would never be corrected at all.
+// Allow recovery bursts without triggering a skip, but scale the margin down
+// for low-delay deployments.
 const (
 	hysteresis = 2 * time.Second
 	minMargin  = 250 * time.Millisecond
 )
 
-// maxPaceLag bounds the whole mechanism: no packet is ever held longer than this
-// past the moment it was due, and a packet already later than this releases
-// immediately with the pacer's debt cleared. One frame at 30fps, so the pacer
-// can spread a frame but never becomes a second buffer, and a link recovering
-// from a stall is not smoothed into staying behind.
+// maxPaceLag limits pacing debt to one 30fps frame; later packets bypass pacing.
 const maxPaceLag = 33 * time.Millisecond
 
-// resetCeiling is the depth at which a buffer stops being polite. The skip below
-// is the graceful correction and it depends on the publisher answering a
-// keyframe request; when that answer never comes -- a lost PLI, an encoder on a
-// long GOP, a link delivering faster than its timestamps claim -- the queue goes
-// on growing and every packet plays out further behind than the one before it.
-// Past this the queue is dropped on the spot rather than held for a keyframe
-// that may not arrive: ten seconds is already several times any delay this
-// product offers, so there is nothing left in there worth playing.
+// resetCeiling drops the queue immediately rather than waiting for a keyframe.
 const resetCeiling = 10 * time.Second
 
 // correctionMargin is how far past its target a buffer may drift before it
@@ -144,10 +110,7 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 	}
 
 	if b.catchUp {
-		// Resuming on a keyframe is only half the correction. The clock mapping
-		// still carries the drift that caused it, so this keyframe would play out
-		// as late as everything it replaced. Rebase onto now, which is what
-		// actually removes the accumulated offset.
+		// Rebase the clock too, or the replacement keyframe retains the old drift.
 		b.catchUp = false
 		b.dropAllLocked()
 		b.baseRTP = pkt.Timestamp
@@ -155,10 +118,7 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 		playAt = b.playoutOf(pkt.Timestamp)
 	}
 
-	// Only a packet that is now due before everything else changes when the
-	// reader has to wake. On a healthy link every packet lands at the back of
-	// the queue, so waking on each one had the reader recompute its wait and
-	// re-arm a timer several hundred times a second for no change at all.
+	// Wake the reader only when its next deadline changes.
 	b.arrived++
 
 	if b.queue.push(buffered{pkt: pkt, playAt: playAt, order: b.arrived}) {
@@ -224,14 +184,8 @@ func (b *Buffer) Pop() (*rtp.Packet, bool) {
 	}
 }
 
-// waitUntilLocked sleeps without holding the lock, waking early if a packet that
-// is due sooner arrives or the buffer closes.
-//
-// One timer is kept and re-armed rather than a new one per wait. There is a
-// single reader per buffer, so there is never more than one wait outstanding,
-// and a fresh timer here was an allocation on the path every packet takes. A
-// timer that fires while it is being re-armed only signals early, which the
-// loop in Pop already tolerates.
+// waitUntilLocked releases the lock while waiting. A single reader reuses one
+// timer to avoid per-packet allocations; Pop tolerates early wakeups.
 func (b *Buffer) waitUntilLocked(wait time.Duration) {
 	if b.timer == nil {
 		b.timer = time.AfterFunc(wait, b.wake)
@@ -252,27 +206,19 @@ func (b *Buffer) wake() {
 }
 
 func (b *Buffer) depthLocked() time.Duration {
-	newest := time.Duration(0)
+	var newest time.Time
 
 	for _, item := range b.queue {
-		if until := time.Until(item.playAt); until > newest {
-			newest = until
+		if item.playAt.After(newest) {
+			newest = item.playAt
 		}
 	}
 
-	return newest
+	return max(0, time.Until(newest))
 }
 
-// Correct drains an overfull buffer by skipping to the next keyframe rather than
-// playing faster. A pass-through relay cannot resample video, and speeding audio
-// pitches it, so one clean skip beats sustained distortion. Reports whether a
-// correction started.
-//
-// Past resetCeiling it stops waiting for that keyframe and empties the queue,
-// which is the only correction that cannot be refused by a publisher that never
-// sends one. Asking again matters as much as the drop: a skip already in flight
-// means the first request went unanswered, and the buffer would otherwise sit at
-// ten seconds behind for as long as the encoder felt like it.
+// Correct requests a keyframe to recover from excess depth and reports whether
+// correction started. Beyond resetCeiling it also discards queued packets.
 func (b *Buffer) Correct() bool {
 	b.mu.Lock()
 
@@ -285,11 +231,7 @@ func (b *Buffer) Correct() bool {
 		b.catchUp = true
 		started = true
 	case b.catchUp:
-		// A skip is already running, and its queue cannot grow past the ceiling:
-		// inter frames are dropped while catching up, so depth reads zero here.
-		// What does happen is nothing at all. The request went unanswered and the
-		// picture stays frozen on the last frame that played. Asking once a second
-		// costs one PLI and is the only thing that ends it.
+		// Retry the keyframe request: the previous PLI may have been lost.
 	case depth <= b.target+correctionMargin(b.target):
 		b.mu.Unlock()
 
@@ -309,14 +251,8 @@ func (b *Buffer) Correct() bool {
 	return started
 }
 
-// paceHoldLocked reports how long the packet at the head should wait so its
-// frame leaves spread across the interval before the next one, rather than as a
-// single burst. Zero means send it now.
-//
-// A group is every packet sharing one playout time, which for video is one
-// frame. The first packet of a group measures the group: how many packets it
-// holds, and how long there is until the next frame is due. The rest follow at
-// that spacing without another scan.
+// paceHoldLocked returns the pacing wait, or zero to send now. Packets sharing
+// a playout time reuse the spacing calculated for the first packet.
 func (b *Buffer) paceHoldLocked(now time.Time) time.Duration {
 	head := b.queue[0]
 
@@ -391,11 +327,8 @@ func (b *Buffer) chargePaceLocked(now time.Time) {
 		return
 	}
 
-	// Anchored to the slot rather than to now. A timer that fires a millisecond
-	// late must not move every packet behind it, or the slop compounds down the
-	// group and the frame finishes after the next one was due -- measured as a
-	// 38ms spread against a 33ms interval. Only a slot that has fallen further
-	// behind than a whole frame is abandoned and restarted from now.
+	// Advance from the scheduled slot so timer jitter does not compound.
+	// Reset only when pacing has fallen more than a frame behind.
 	if b.nextSlot.Before(now.Add(-b.lateAllowanceLocked())) {
 		b.nextSlot = now
 	}
@@ -405,6 +338,7 @@ func (b *Buffer) chargePaceLocked(now time.Time) {
 
 func (b *Buffer) dropAllLocked() {
 	b.dropped += uint64(len(b.queue)) //nolint:gosec // a queue length is never negative.
+	clear(b.queue)                    // Release packet payloads while retaining queue capacity.
 	b.queue = b.queue[:0]
 }
 
@@ -417,14 +351,8 @@ func (b *Buffer) Stats() (late, dropped uint64) {
 	return b.late, b.dropped
 }
 
-// SetTarget changes the playout target of a running buffer. Clamping is the
-// caller's job; config does it on every path that can set one.
-//
-// Packets already queued move with it. They were scheduled against the old
-// target, so leaving them where they are would put every packet arriving after
-// a lowered delay ahead of every packet queued before it, and the relay would
-// write a second of media out in reverse. The shift is the same for all of
-// them, so the heap order is unchanged.
+// SetTarget shifts queued packets equally to preserve ordering with new arrivals.
+// Callers must clamp the target before setting it.
 func (b *Buffer) SetTarget(target time.Duration) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -448,13 +376,8 @@ func (b *Buffer) Close() {
 	b.ready.Broadcast()
 }
 
-// buffered is one packet, the moment it is due, and where it sat in the arrival
-// order. The order is the tie-break: every packet of a frame carries one RTP
-// timestamp and therefore one playAt, so without it the heap returns them in
-// whatever order its own swaps left behind. That reordering is invisible in a
-// test that pushes one packet per frame and very visible on the wire, where a
-// receiver handed seq 1, 10, 9 asks for retransmissions of packets that were
-// never lost.
+// buffered breaks equal playout times by arrival order, preserving packet order
+// within a frame and avoiding unnecessary retransmission requests.
 type buffered struct {
 	pkt    *rtp.Packet
 	playAt time.Time
@@ -471,12 +394,8 @@ func (b buffered) before(other buffered) bool {
 	return b.playAt.Before(other.playAt)
 }
 
-// packetHeap is a binary min-heap ordered by playout time, which also repairs
-// reordering: a packet arriving out of order sorts back into place.
-//
-// container/heap would do this, but its Push and Pop take and return `any`, so
-// every packet boxed a buffered value onto the heap. That was two allocations
-// per packet on a path that carries several hundred a second per camera.
+// packetHeap orders packets by playout time without container/heap's per-packet
+// interface boxing allocations.
 type packetHeap []buffered
 
 // push adds an item and reports whether it came to rest at the root, which is
