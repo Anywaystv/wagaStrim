@@ -59,7 +59,6 @@ type counter struct {
 
 	rtt     int
 	lost    uint64
-	total   uint64
 	started time.Time
 	live    bool
 	late    uint64
@@ -187,7 +186,6 @@ func (r *Registry) Observe(ingestID string, total, late, dropped uint64) {
 	}
 
 	now := time.Now()
-	entry.total = total
 	entry.late = late
 	entry.dropped = dropped
 

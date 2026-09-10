@@ -85,13 +85,13 @@ func TestSamplesAreRateLimited(t *testing.T) {
 	reg.Publishing("cam")
 
 	for i := range 100 {
-		reg.Observe("cam", uint64(i)*1000, 0, 0)
+		reg.Observe("cam", uint64(i)*1000, uint64(i), uint64(i)*2)
 	}
 
 	assert.LessOrEqual(t, len(reg.counters["cam"].samples), 2,
 		"a burst of packets must not become a burst of samples")
-	assert.Equal(t, uint64(99000), reg.counters["cam"].total,
-		"the running total still tracks every packet")
+	assert.Equal(t, uint64(99), reg.Of("cam").Late, "late counts update between bitrate samples")
+	assert.Equal(t, uint64(198), reg.Of("cam").Dropped, "drop counts update between bitrate samples")
 }
 
 func TestObserveIgnoresAnIngestThatIsNotPublishing(t *testing.T) {
