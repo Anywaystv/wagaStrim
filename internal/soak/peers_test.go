@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MarcFryd/wagaStrim/internal/config"
-	"github.com/MarcFryd/wagaStrim/internal/egress"
-	"github.com/MarcFryd/wagaStrim/internal/ingest"
+	"github.com/Anywaystv/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/egress"
+	"github.com/Anywaystv/wagaStrim/internal/ingest"
 	"github.com/pion/webrtc/v4"
 	pionmedia "github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/require"

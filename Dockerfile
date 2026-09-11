@@ -11,9 +11,11 @@ WORKDIR /src
 
 # Dependencies first, so a source edit does not re-download the module cache.
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download all
 
 COPY . .
+
+RUN go run scripts/tools.go notices > /THIRD_PARTY_NOTICES.txt
 
 # No cgo and no tray: the tray is the only package that needs either, and a
 # static binary is what makes the runtime stage empty.
@@ -32,5 +34,7 @@ VOLUME /config
 EXPOSE 7331/tcp 7332/udp 7333/tcp
 
 COPY --from=build /wagastrim /wagastrim
+COPY --from=build /src/LICENSES/MIT.txt /LICENSE.txt
+COPY --from=build /THIRD_PARTY_NOTICES.txt /THIRD_PARTY_NOTICES.txt
 
 ENTRYPOINT ["/wagastrim", "-headless"]

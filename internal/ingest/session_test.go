@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MarcFryd/wagaStrim/internal/relay"
-	"github.com/MarcFryd/wagaStrim/internal/stats"
+	"github.com/Anywaystv/wagaStrim/internal/relay"
+	"github.com/Anywaystv/wagaStrim/internal/stats"
 	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/require"
 )

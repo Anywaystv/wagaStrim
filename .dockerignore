@@ -1,8 +1,6 @@
 .git
 .github
 .golangci.yml
-LICENSES
 PLAN.md
 AGENTS.md
 CLAUDE.md
-scripts

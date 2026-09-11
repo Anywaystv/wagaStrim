@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MarcFryd/wagaStrim/internal/egress"
+	"github.com/Anywaystv/wagaStrim/internal/egress"
 	"github.com/pion/logging"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
