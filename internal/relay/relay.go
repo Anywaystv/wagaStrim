@@ -7,20 +7,17 @@ package relay
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/pion/webrtc/v4"
 )
 
-// correctionInterval is how often a buffer is checked for drift. Faster than
-// this is noise; slower and a growing buffer takes too long to notice.
+// correctionInterval controls how often buffers are checked for drift.
 const correctionInterval = time.Second
 
-// keyframeInterval is the shortest gap between two keyframe requests to one
-// publisher. A receiver losing packets asks on every damaged frame, and a phone
-// answering each of those emits nothing but IDRs, which is the worst thing to do
-// to a link that is already short of bandwidth.
+// keyframeInterval throttles requests so packet loss cannot cause an IDR flood.
 const keyframeInterval = 500 * time.Millisecond
 
 // Stream is the live media of one ingest.
@@ -30,9 +27,7 @@ type Stream struct {
 	tracks  map[webrtc.RTPCodecType]*webrtc.TrackLocalStaticRTP
 	buffers []*Buffer
 
-	// keyframe asks the publisher for an IDR. A subscriber joining mid-stream
-	// otherwise shows nothing until the encoder happens to emit one, which on a
-	// long GOP is seconds of black.
+	// Request an IDR when viewers join, avoiding a wait for the next keyframe.
 	keyframe     func()
 	lastKeyframe time.Time
 }
@@ -89,9 +84,7 @@ func (r *Relay) Publish(
 	stream.mu.Lock()
 	stream.tracks[kind] = track
 
-	// Only the video track's callback is kept. Audio calls this too, and storing
-	// its callback would point the keyframe request at the audio SSRC, where a
-	// PLI means nothing and no picture ever arrives.
+	// Keep the video callback: PLI requests must not target the audio SSRC.
 	if kind == webrtc.RTPCodecTypeVideo {
 		stream.keyframe = keyframe
 	}
@@ -160,9 +153,7 @@ func (r *Relay) Track(ingestID string, buf *Buffer) {
 	stream.buffers = append(stream.buffers, buf)
 }
 
-// Untrack forgets a buffer whose track has ended. Without it a link that
-// reconnects repeatedly leaves a closed buffer behind on every attempt, and
-// Retarget walks a list that only ever grows.
+// Untrack releases ended buffers so reconnects do not grow the retarget list.
 func (r *Relay) Untrack(ingestID string, buf *Buffer) {
 	r.mu.RLock()
 	stream, ok := r.streams[ingestID]
@@ -177,7 +168,7 @@ func (r *Relay) Untrack(ingestID string, buf *Buffer) {
 
 	for idx, held := range stream.buffers {
 		if held == buf {
-			stream.buffers = append(stream.buffers[:idx], stream.buffers[idx+1:]...)
+			stream.buffers = slices.Delete(stream.buffers, idx, idx+1)
 
 			return
 		}
@@ -195,8 +186,7 @@ func (r *Relay) Retarget(ingestID string, target time.Duration) {
 	}
 
 	stream.mu.RLock()
-	buffers := make([]*Buffer, len(stream.buffers))
-	copy(buffers, stream.buffers)
+	buffers := slices.Clone(stream.buffers)
 	stream.mu.RUnlock()
 
 	for _, buf := range buffers {
@@ -204,10 +194,8 @@ func (r *Relay) Retarget(ingestID string, target time.Duration) {
 	}
 }
 
-// Drop removes a stream when its publisher goes away. Its subscribers are not
-// left behind: they hold the track object this stream was writing into, and the
-// publisher gets a fresh one when it returns, so the ingest server disconnects
-// them in the same breath as calling this.
+// Drop removes a stream. The ingest server also disconnects its subscribers,
+// since a replacement publisher gets new track objects.
 func (r *Relay) Drop(ingestID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

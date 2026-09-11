@@ -39,6 +39,24 @@ func idr() []byte { return []byte{h264IDR} }
 // interFrame is a payload that does not.
 func interFrame() []byte { return []byte{0x01} }
 
+func TestDropAllReleasesPacketReferences(t *testing.T) {
+	buf := NewBuffer(time.Second, testClock, "video/H264", nil)
+	defer buf.Close()
+	buf.Push(packet(1, 0, idr()...))
+	buf.Push(packet(2, 3000, interFrame()...))
+	storage := buf.queue[:cap(buf.queue)]
+	buf.dropAllLocked()
+	require.Empty(t, buf.queue)
+	require.Equal(t, len(storage), cap(buf.queue), "retain storage for reuse")
+	require.EqualValues(t, 2, buf.dropped)
+	for _, item := range storage {
+		require.Nil(t, item.pkt, "discarded packets must be eligible for garbage collection")
+	}
+	buf.Push(packet(3, 6000, idr()...))
+	require.Len(t, buf.queue, 1)
+	require.EqualValues(t, 3, buf.queue[0].pkt.SequenceNumber)
+}
+
 func TestPacketIsHeldForTheTarget(t *testing.T) {
 	buf := NewBuffer(150*time.Millisecond, testClock, "video/H264", nil)
 	defer buf.Close()
@@ -498,6 +516,10 @@ func TestUntrackForgetsAClosedBuffer(t *testing.T) {
 	hub.mu.RUnlock()
 
 	assert.Zero(t, held, "twenty reconnects must not leave twenty dead buffers")
+	storage := hub.streams["cam"].buffers
+	for _, buf := range storage[:cap(storage)] {
+		assert.Nil(t, buf, "untracked buffers must not remain referenced by the backing array")
+	}
 }
 
 // Bonded paths arrive out of order by the skew between them, which the replay

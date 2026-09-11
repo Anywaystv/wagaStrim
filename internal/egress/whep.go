@@ -50,7 +50,9 @@ type Server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*Session
-	pending  map[string]int
+	// Pending entries remain counted until negotiation exits; false means canceled.
+	pending map[*Session]bool
+	closed  bool
 }
 
 const (
@@ -66,7 +68,7 @@ func NewServer(cfg *config.Config, log logging.LeveledLogger, api *webrtc.API, h
 		api:      api,
 		relay:    hub,
 		sessions: map[string]*Session{},
-		pending:  map[string]int{},
+		pending:  map[*Session]bool{},
 	}
 }
 
@@ -92,23 +94,26 @@ func (s *Server) Subscribe(key, offer string) (answer string, resource string, e
 		return "", "", ErrNotReceiving
 	}
 
+	session := s.reserve(ing.ID)
+	if session == nil {
+		return "", "", ErrCapacity
+	}
+	defer s.releaseReservation(session)
+
 	tracks, err := s.relay.Subscribe(ing.ID)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %s", ErrOffline, ing.Label)
 	}
 
-	return s.negotiate(ing, desc, tracks)
+	return s.negotiate(ing, desc, tracks, session)
 }
 
 func (s *Server) negotiate(
 	ing config.Ingest,
 	desc webrtc.SessionDescription,
 	tracks []*webrtc.TrackLocalStaticRTP,
+	session *Session,
 ) (string, string, error) {
-	if !s.reserve(ing.ID) {
-		return "", "", ErrCapacity
-	}
-	defer s.releaseReservation(ing.ID)
 	peer, err := s.api.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", ErrBadOffer, err)
@@ -135,7 +140,7 @@ func (s *Server) negotiate(
 		return "", "", peerpkg.Discard(peer, fmt.Errorf("%w: %w", ErrBadOffer, err), s.log)
 	}
 
-	session := &Session{Resource: resource, IngestID: ing.ID, peer: peer}
+	session.Resource, session.peer = resource, peer
 
 	peer.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		s.log.Infof("subscriber on %s: %s", ing.Label, state)
@@ -146,6 +151,11 @@ func (s *Server) negotiate(
 	})
 
 	s.mu.Lock()
+	if !s.pending[session] {
+		s.mu.Unlock()
+
+		return "", "", peerpkg.Discard(peer, ErrOffline, s.log)
+	}
 	s.sessions[resource] = session
 	s.mu.Unlock()
 	// A receiver which never completes ICE must not retain a slot indefinitely.
@@ -158,33 +168,33 @@ func (s *Server) negotiate(
 	return answer, resource, nil
 }
 
-func (s *Server) releaseReservation(ingestID string) {
+func (s *Server) releaseReservation(session *Session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pending[ingestID]--
-	if s.pending[ingestID] == 0 {
-		delete(s.pending, ingestID)
-	}
+	delete(s.pending, session)
 }
 
-func (s *Server) reserve(ingestID string) bool {
+func (s *Server) reserve(ingestID string) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	total, camera := len(s.sessions), s.pending[ingestID]
-	for _, count := range s.pending {
-		total += count
+	total, camera := len(s.sessions)+len(s.pending), 0
+	for session := range s.pending {
+		if session.IngestID == ingestID {
+			camera++
+		}
 	}
 	for _, session := range s.sessions {
 		if session.IngestID == ingestID {
 			camera++
 		}
 	}
-	if total >= maxSubscribers || camera >= maxSubscribersPerIngest {
-		return false
+	if s.closed || total >= maxSubscribers || camera >= maxSubscribersPerIngest {
+		return nil
 	}
-	s.pending[ingestID]++
+	session := &Session{IngestID: ingestID}
+	s.pending[session] = true
 
-	return true
+	return session
 }
 
 // drainRTCP consumes a subscriber's RTCP and passes its keyframe requests back
@@ -220,6 +230,11 @@ func (s *Server) drainRTCP(sender *webrtc.RTPSender, ingestID string) {
 // CloseIngest disconnects every subscriber of one camera.
 func (s *Server) CloseIngest(ingestID string) {
 	s.mu.Lock()
+	for session := range s.pending {
+		if session.IngestID == ingestID {
+			s.pending[session] = false
+		}
+	}
 	doomed := make([]*Session, 0, len(s.sessions))
 
 	for resource, session := range s.sessions {
@@ -265,6 +280,10 @@ func (s *Server) forget(resource string) {
 // Close ends every subscriber.
 func (s *Server) Close() {
 	s.mu.Lock()
+	s.closed = true
+	for session := range s.pending {
+		s.pending[session] = false
+	}
 	live := make([]*Session, 0, len(s.sessions))
 
 	for _, session := range s.sessions {

@@ -14,22 +14,9 @@ import (
 // to hold before playing any of it.
 const playoutDelayURI = "http://www.webrtc.org/experiments/rtp-hdrext/playout-delay"
 
-// The hold asked of a subscriber, in the extension's own units of 10ms. A
-// WebRTC receiver otherwise keeps the smallest buffer that keeps up, which is
-// right for a conversation and wrong here: nobody is talking back, and a frame
-// arrives as a clump of packets. At the edge of that jitter the decoder stutters
-// on every late packet, which is what reaches Twitch or Kick as a re-encode of
-// a stuttering picture.
-//
-// The player page asks for the same 300ms through jitterBufferTarget. That is
-// the same request through a JavaScript API, and only newer builds have it: the
-// name changed from playoutDelayHint, and an OBS Browser Source is whatever
-// Chromium its CEF was cut from. The extension reaches the ones that do not,
-// and it applies from the first packet rather than from whenever the page runs.
-//
-// The ceiling is loose on purpose. Pinning it to the floor would stop a receiver
-// holding more when a link genuinely needs it, and the queue that grows is the
-// one this relay already watches.
+// Playout bounds in 10ms units. The 300ms floor matches the player's
+// jitterBufferTarget and also reaches clients without that JavaScript API.
+// The higher ceiling lets receivers absorb additional jitter.
 const (
 	playoutFloor   = 30
 	playoutCeiling = 100

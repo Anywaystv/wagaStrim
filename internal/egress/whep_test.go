@@ -219,21 +219,14 @@ func attachViewer(
 
 	select {
 	case track := <-carrying:
+		assert.Equal(t, webrtc.MimeTypeH264, track.Codec().MimeType)
+
 		return viewer, track, packets
 	case <-time.After(20 * time.Second):
 		require.Fail(t, "no RTP reached the subscriber")
 	}
 
 	return nil, nil, nil
-}
-
-func TestSubscriberReceivesPackets(t *testing.T) {
-	whip, whep, ing := pipeline(t)
-	writeFrame, _, _ := publishWithFeedback(t, whip, ing)
-
-	_, track, _ := attachViewer(t, whep, ing, writeFrame)
-
-	assert.Equal(t, webrtc.MimeTypeH264, track.Codec().MimeType)
 }
 
 func TestSubscriberPLICrossesTheRelayToThePublisher(t *testing.T) {
@@ -430,6 +423,47 @@ func TestSenderKeyAtWhepIsRefused(t *testing.T) {
 
 	_, _, err := whep.Subscribe(ing.SenderKey, recvOffer(t))
 	assert.ErrorIs(t, err, egress.ErrWrongRole, "the Moblin link must not subscribe")
+}
+
+func TestPublisherTeardownDuringSubscribe(t *testing.T) {
+	for _, action := range []string{"stop", "replace", "close server"} {
+		t.Run(action, func(t *testing.T) {
+			cfg := &config.Config{Ingests: []config.Ingest{testIngest("camera")}}
+			ing := cfg.Ingests[0]
+			hub := relay.New()
+			log := logging.NewDefaultLoggerFactory().NewLogger("test")
+			whep := egress.NewServer(cfg, log, webrtc.NewAPI(), hub)
+			t.Cleanup(whep.Close)
+			codec := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000}
+			stopped := false
+			_, err := hub.Publish(ing.ID, webrtc.RTPCodecTypeVideo, codec, func() {
+				// Subscribe has captured the old tracks when it requests this keyframe.
+				hub.Drop(ing.ID)
+				whep.CloseIngest(ing.ID)
+				if action == "close server" {
+					whep.Close()
+				}
+				if action != "stop" {
+					_, publishErr := hub.Publish(ing.ID, webrtc.RTPCodecTypeVideo, codec, nil)
+					require.NoError(t, publishErr)
+				}
+				stopped = true
+			})
+			require.NoError(t, err)
+			answer, resource, err := whep.Subscribe(ing.ReceiverKey, recvOffer(t))
+			require.True(t, stopped)
+			require.ErrorIs(t, err, egress.ErrOffline)
+			assert.Empty(t, answer)
+			assert.Empty(t, resource)
+			_, resource, err = whep.Subscribe(ing.ReceiverKey, recvOffer(t))
+			if action == "replace" {
+				require.NoError(t, err, "a fresh subscription may use the replacement publisher")
+				require.NoError(t, whep.Teardown(resource))
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
 }
 
 func TestSubscribingToAnIdleIngestSaysSo(t *testing.T) {

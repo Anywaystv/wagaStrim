@@ -27,6 +27,22 @@ func (c *recoveryConn) identity(remote net.Addr) string {
 	return c.identityLocked(remote)
 }
 
+func TestRecoveryReadyReleasesDeliveredPackets(t *testing.T) {
+	conn := &recoveryConn{recoveryState: newRecoveryState()}
+	first := recoveredDatagram{data: []byte{1}, identity: "first"}
+	second := recoveredDatagram{data: []byte{2}, identity: "second"}
+	conn.ready = []recoveredDatagram{first, second}
+	backing := conn.ready
+	for _, want := range []recoveredDatagram{first, second} {
+		got, ok := conn.popReady()
+		require.True(t, ok)
+		assert.Equal(t, want, got)
+		assert.Zero(t, backing[len(conn.ready)])
+	}
+	_, ok := conn.popReady()
+	assert.False(t, ok)
+}
+
 func TestRecoveryIdentityRequiresPionAuthenticatedSuccess(t *testing.T) {
 	conn, sender := recoverySocketPair(t)
 	mux := ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: conn})

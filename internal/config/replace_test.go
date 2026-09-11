@@ -105,26 +105,28 @@ func TestReplaceRefusesAListItCannotResolve(t *testing.T) {
 
 // Explicit deployment minima still apply; the default permits zero delay.
 func TestALoweredFloorIsHonoredAllTheWayToZero(t *testing.T) {
-	cfg := &Config{FloorMS: new(300), Ingests: []Ingest{{DelayMS: 300}, {DelayMS: 120}}}
-	cfg.normalise()
-
-	assert.Equal(t, 300, cfg.Ingests[0].DelayMS, "a lowered floor must be honored")
-	assert.Equal(t, 300, cfg.Ingests[1].DelayMS, "below the lowered floor still clamps")
-
-	absent := &Config{Ingests: []Ingest{{DelayMS: 300}}}
-	absent.normalise()
-	assert.Equal(t, 300, absent.Ingests[0].DelayMS, "an omitted floor preserves valid delays")
-
-	// An explicit zero minimum has the same behavior as an omitted minimum.
-	none := &Config{FloorMS: new(0), Ingests: []Ingest{{DelayMS: 0}, {DelayMS: 40}}}
-	none.normalise()
-	assert.Equal(t, 0, none.Ingests[0].DelayMS, "a stated zero floor must pass a zero delay through")
-	assert.Equal(t, 40, none.Ingests[1].DelayMS, "nothing to clamp against once the floor is zero")
-	assert.Equal(t, 0, none.Floor(), "the slider has to be told it may reach zero")
-
-	silly := &Config{FloorMS: new(-500), Ingests: []Ingest{{DelayMS: -500}}}
-	silly.normalise()
-	assert.Equal(t, 0, silly.Ingests[0].DelayMS, "a negative buffer is not a buffer")
+	for _, tc := range []struct {
+		name        string
+		floor       *int
+		delay, want int
+	}{
+		{"at floor", new(300), 300, 300},
+		{"below floor", new(300), 120, 300},
+		{"omitted floor", nil, 300, 300},
+		{"zero delay", new(0), 0, 0},
+		{"above zero", new(0), 40, 40},
+		{"negative floor", new(-500), -500, 0},
+		{"excessive floor", new(99999), 500, DelayMaxMS},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{FloorMS: tc.floor, Ingests: []Ingest{{DelayMS: tc.delay}}}
+			cfg.normalise()
+			assert.Equal(t, tc.want, cfg.Ingests[0].DelayMS)
+			if tc.floor != nil && *tc.floor == 0 {
+				assert.Zero(t, cfg.Floor(), "the slider must allow zero")
+			}
+		})
+	}
 }
 
 // A new camera opens at the two second default whatever the floor underneath it

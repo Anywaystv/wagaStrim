@@ -10,28 +10,21 @@ import (
 	"github.com/pion/rtp"
 )
 
-// The relay touches every packet, so what matters is per-packet cost and
-// allocation rate, not throughput. At 8 Mbps that is roughly 830 packets a
-// second per camera.
+// Measure queue operations without pacing or a growing producer backlog.
 func BenchmarkBufferPushPop(b *testing.B) {
 	buf := NewBuffer(0, testClock, "video/H264", nil)
 	defer buf.Close()
 
-	// Packets are built up front. Allocating one per iteration would measure the
-	// benchmark rather than the buffer.
-	packets := fixture(b.N)
-
-	go func() {
-		for range b.N {
-			buf.Pop()
-		}
-	}()
+	pkt := fixture(1)[0]
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := range b.N {
-		buf.Push(packets[i])
+	for range b.N {
+		buf.Push(pkt)
+		if _, ok := buf.Pop(); !ok {
+			b.Fatal("buffer drained early")
+		}
 	}
 }
 
@@ -81,6 +74,20 @@ func BenchmarkBufferPopWait(b *testing.B) {
 	}
 }
 
+func BenchmarkBufferDepth(b *testing.B) {
+	buf := NewBuffer(0, testClock, "video/H264", nil)
+	defer buf.Close()
+	now := time.Now()
+	for i := range 1660 {
+		buf.queue.push(buffered{playAt: now.Add(time.Duration(i) * time.Millisecond)})
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		buf.depthLocked()
+	}
+}
+
 // The heap is the part that changed, so it is measured on its own. Scheduling a
 // packet into the future is the buffer's job and would make this a benchmark of
 // time.Until instead.
@@ -105,32 +112,24 @@ func BenchmarkHeapSteadyState(b *testing.B) {
 
 // Keyframe detection runs on every video packet and is the only place the relay
 // looks inside a payload.
-func BenchmarkKeyframeH264(b *testing.B) {
-	payload := make([]byte, 1200)
-	payload[0] = h264FUA
-	payload[1] = h264FUStartBit | h264IDR
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for range b.N {
-		if !isKeyframe("video/H264", payload) {
-			b.Fatal("expected a keyframe")
-		}
-	}
-}
-
-func BenchmarkKeyframeH265(b *testing.B) {
-	payload := make([]byte, 1200)
-	payload[0] = 49 << 1
-	payload[2] = 0x80 | 19
-
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	for range b.N {
-		if !isKeyframe("video/H265", payload) {
-			b.Fatal("expected a keyframe")
-		}
+func BenchmarkKeyframe(b *testing.B) {
+	for _, tc := range []struct {
+		mime   string
+		header []byte
+	}{
+		{"video/H264", []byte{h264FUA, h264FUStartBit | h264IDR}},
+		{"video/H265", []byte{49 << 1, 0, 0x80 | 19}},
+	} {
+		b.Run(tc.mime, func(b *testing.B) {
+			payload := make([]byte, 1200)
+			copy(payload, tc.header)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if !isKeyframe(tc.mime, payload) {
+					b.Fatal("expected a keyframe")
+				}
+			}
+		})
 	}
 }

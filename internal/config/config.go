@@ -134,9 +134,15 @@ func (c *Config) SetPublicHost(host string) error {
 		return nil
 	}
 
+	previous := c.PublicHost
 	c.PublicHost = host
+	if err := c.saveLocked(); err != nil {
+		c.PublicHost = previous
 
-	return c.saveLocked()
+		return err
+	}
+
+	return nil
 }
 
 // SetAutostart records the toggle. The platform is the authority on whether the
@@ -145,9 +151,15 @@ func (c *Config) SetAutostart(on bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	previous := c.Autostart
 	c.Autostart = on
+	if err := c.saveLocked(); err != nil {
+		c.Autostart = previous
 
-	return c.saveLocked()
+		return err
+	}
+
+	return nil
 }
 
 // Host returns the public address, or an empty string if none is known yet.
@@ -241,30 +253,16 @@ func (c *Config) normalise() {
 
 // clampFloor retains explicit deployment limits within the supported range.
 func clampFloor(floorMS *int) int {
-	switch {
-	case floorMS == nil:
+	if floorMS == nil {
 		return DelayFloorMS
-	case *floorMS < 0:
-		return 0
-	case *floorMS > DelayMaxMS:
-		return DelayMaxMS
-	default:
-		return *floorMS
 	}
+
+	return min(DelayMaxMS, max(0, *floorMS))
 }
 
 // clampDelay applies the same bounds to loaded settings and API updates.
 func (c *Config) clampDelay(delayMS int) int {
-	floor := clampFloor(c.FloorMS)
-
-	switch {
-	case delayMS < floor:
-		return floor
-	case delayMS > DelayMaxMS:
-		return DelayMaxMS
-	default:
-		return delayMS
-	}
+	return min(DelayMaxMS, max(clampFloor(c.FloorMS), delayMS))
 }
 
 // Save writes the config through a temporary file and a rename, so a crash
@@ -348,16 +346,9 @@ func (c *Config) AddIngest(label string) (Ingest, error) {
 	return c.Ingests[len(c.Ingests)-1], nil
 }
 
-// ReplaceIngests sets the whole list from a deployment that owns it elsewhere.
-// A compositor box is cattle: it is deleted and recreated on an idle timer, and
-// a key minted here would hand the streamer a new push URL every time. The
-// dashboard keeps the list and pushes it, so a replaced machine comes back with
-// the same links.
-//
-// The returned identifiers are the cameras whose live sessions can no longer be
-// trusted, either because the camera is gone or because its keys or codecs
-// moved under it. The caller closes those, exactly as removing one from the
-// settings page does.
+// ReplaceIngests installs a deployment-owned list, preserving supplied keys
+// across server replacement. It returns IDs whose sessions must close because
+// the camera was removed or its keys or codecs changed.
 func (c *Config) ReplaceIngests(next []Ingest) ([]string, error) {
 	if err := validateIngests(next); err != nil {
 		return nil, err
@@ -420,34 +411,20 @@ func validateIngests(list []Ingest) error {
 	return nil
 }
 
-// staleIngests names the cameras whose running session cannot survive the new
-// list. A publisher holding a key that no longer resolves would keep sending
-// into a camera nobody can subscribe to, and a codec change needs the
-// negotiation redone.
+// staleIngests finds removed cameras and changes requiring renegotiation.
 func staleIngests(current, next []Ingest) []string {
 	stale := make([]string, 0, len(current))
 
-	for idx := range current {
-		was := current[idx]
-		found := false
+	for _, was := range current {
+		idx := slices.IndexFunc(next, func(ing Ingest) bool { return ing.ID == was.ID })
+		if idx < 0 {
+			stale = append(stale, was.ID)
 
-		for jdx := range next {
-			now := next[jdx]
-			if now.ID != was.ID {
-				continue
-			}
-
-			found = true
-
-			if now.SenderKey != was.SenderKey || now.ReceiverKey != was.ReceiverKey ||
-				!slices.Equal(keepCodecs(now.Codecs), was.Codecs) {
-				stale = append(stale, was.ID)
-			}
-
-			break
+			continue
 		}
-
-		if !found {
+		now := next[idx]
+		if now.SenderKey != was.SenderKey || now.ReceiverKey != was.ReceiverKey ||
+			!slices.Equal(keepCodecs(now.Codecs), was.Codecs) {
 			stale = append(stale, was.ID)
 		}
 	}
@@ -465,9 +442,15 @@ func (c *Config) RemoveIngest(id string) error {
 			continue
 		}
 
-		c.Ingests = append(c.Ingests[:idx], c.Ingests[idx+1:]...)
+		previous := c.Ingests
+		c.Ingests = slices.Delete(slices.Clone(previous), idx, idx+1)
+		if err := c.saveLocked(); err != nil {
+			c.Ingests = previous
 
-		return c.saveLocked()
+			return err
+		}
+
+		return nil
 	}
 
 	return fmt.Errorf("%w: %s", ErrUnknownIngest, id)
@@ -546,9 +529,15 @@ func (c *Config) update(id string, change func(*Ingest)) error {
 			continue
 		}
 
+		previous := c.Ingests[idx]
 		change(&c.Ingests[idx])
+		if err := c.saveLocked(); err != nil {
+			c.Ingests[idx] = previous
 
-		return c.saveLocked()
+			return err
+		}
+
+		return nil
 	}
 
 	return fmt.Errorf("%w: %s", ErrUnknownIngest, id)
@@ -577,7 +566,7 @@ func (c *Config) SetCodecs(id string, codecs []string) error {
 // keepCodecs narrows a requested set to the codecs the relay can carry, in
 // preference order, and never returns an empty set.
 func keepCodecs(codecs []string) []string {
-	keep := make([]string, 0, len(codecs))
+	keep := make([]string, 0, min(len(codecs), len(AllCodecs())))
 
 	for _, name := range AllCodecs() {
 		if slices.Contains(codecs, name) {
