@@ -1,4 +1,4 @@
-module github.com/MarcFryd/wagaStrim
+module github.com/Anywaystv/wagaStrim
 
 go 1.26.6
 

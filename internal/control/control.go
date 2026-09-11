@@ -20,9 +20,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MarcFryd/wagaStrim/internal/config"
-	"github.com/MarcFryd/wagaStrim/internal/listen"
-	"github.com/MarcFryd/wagaStrim/internal/stats"
+	"github.com/Anywaystv/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/listen"
+	"github.com/Anywaystv/wagaStrim/internal/stats"
 	"github.com/pion/logging"
 )
 

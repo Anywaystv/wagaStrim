@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcFryd/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/config"
 	"github.com/pion/logging"
 	"github.com/stretchr/testify/assert"
 )

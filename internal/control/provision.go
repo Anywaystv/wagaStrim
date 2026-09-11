@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/MarcFryd/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/config"
 )
 
 type cameraLinks struct {

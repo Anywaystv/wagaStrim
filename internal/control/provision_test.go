@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/MarcFryd/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

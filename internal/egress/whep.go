@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/MarcFryd/wagaStrim/internal/config"
-	peerpkg "github.com/MarcFryd/wagaStrim/internal/peer"
-	"github.com/MarcFryd/wagaStrim/internal/relay"
+	"github.com/Anywaystv/wagaStrim/internal/config"
+	peerpkg "github.com/Anywaystv/wagaStrim/internal/peer"
+	"github.com/Anywaystv/wagaStrim/internal/relay"
 	"github.com/pion/logging"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"

@@ -16,10 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MarcFryd/wagaStrim/internal/config"
-	"github.com/MarcFryd/wagaStrim/internal/egress"
-	"github.com/MarcFryd/wagaStrim/internal/ingest"
-	"github.com/MarcFryd/wagaStrim/internal/listen"
+	"github.com/Anywaystv/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/egress"
+	"github.com/Anywaystv/wagaStrim/internal/ingest"
+	"github.com/Anywaystv/wagaStrim/internal/listen"
 	"github.com/pion/logging"
 )
 

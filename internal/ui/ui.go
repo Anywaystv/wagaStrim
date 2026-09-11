@@ -20,13 +20,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MarcFryd/wagaStrim/docs"
-	"github.com/MarcFryd/wagaStrim/internal/autostart"
-	"github.com/MarcFryd/wagaStrim/internal/config"
-	"github.com/MarcFryd/wagaStrim/internal/ingest"
-	"github.com/MarcFryd/wagaStrim/internal/listen"
-	"github.com/MarcFryd/wagaStrim/internal/reach"
-	"github.com/MarcFryd/wagaStrim/internal/stats"
+	"github.com/Anywaystv/wagaStrim/docs"
+	"github.com/Anywaystv/wagaStrim/internal/autostart"
+	"github.com/Anywaystv/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/ingest"
+	"github.com/Anywaystv/wagaStrim/internal/listen"
+	"github.com/Anywaystv/wagaStrim/internal/reach"
+	"github.com/Anywaystv/wagaStrim/internal/stats"
 	"github.com/pion/logging"
 )
 
