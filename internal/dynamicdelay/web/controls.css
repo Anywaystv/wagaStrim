@@ -1,0 +1,10 @@
+/* SPDX-FileCopyrightText: 2026 wagaStrim contributors
+   SPDX-License-Identifier: MIT */
+[data-dynamic-delay] { border: 0; padding: 0; min-width: 0 }
+[data-dynamic-delay] legend { padding: 0; font-size: .85rem; font-weight: 600 }
+[data-dynamic-options] { margin-top: .6rem }
+[data-dynamic-options] .delay-label { display: flex; justify-content: space-between; gap: 1rem }
+[data-dynamic-options] .row { flex-wrap: nowrap; align-items: flex-start }
+[data-dynamic-maximum], [data-dynamic-speed] { width: 100%; margin: .5rem 0 }
+[data-dynamic-delay] input[type=checkbox] { flex: none; accent-color: var(--accent) }
+[data-dynamic-options][hidden] { display: none }

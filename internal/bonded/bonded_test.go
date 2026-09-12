@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Anywaystv/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/dynamicdelay"
 	"github.com/Anywaystv/wagaStrim/internal/egress"
 	"github.com/Anywaystv/wagaStrim/internal/ingest"
 	"github.com/Anywaystv/wagaStrim/internal/relay"
@@ -148,10 +149,11 @@ func sender(t *testing.T, mode routing) (*webrtc.PeerConnection, *webrtc.TrackLo
 
 // fixture wires a spraying publisher into the ingest, attaches a viewer to the
 // egress, and hands back a writer that returns the sequence number it used.
-func fixture(t *testing.T, mode routing) (func() uint16, *arrivals, *paths) {
+func fixture(t *testing.T, mode routing, options dynamicdelay.Options) (func() uint16, *arrivals, *paths) {
 	t.Helper()
 
 	cam := config.Ingest{
+		Options:     options,
 		ID:          "bonded",
 		Label:       "Bonded",
 		SenderKey:   config.SenderPrefix + "00000000000000000000000000000001",
@@ -237,7 +239,10 @@ func describe(t *testing.T, peer *webrtc.PeerConnection) string {
 func attach(t *testing.T, whep *egress.Server, cam *config.Ingest, seen *arrivals, warmUp func()) {
 	t.Helper()
 
-	viewer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	// Count the merge's output without downstream NACK/RTX adding repair
+	// copies with the same original RTP sequence number.
+	api := webrtc.NewAPI(webrtc.WithInterceptorRegistry(&interceptor.Registry{}))
+	viewer, err := api.NewPeerConnection(webrtc.Configuration{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = viewer.Close() })
 
@@ -301,7 +306,7 @@ func run(t *testing.T, write func() uint16, seen *arrivals) (present, repeated i
 // selected pair. Half of this stream leaves by a socket ICE did not nominate,
 // and the ingest still has to end up with all of it.
 func TestMediaSplitAcrossPathsArrivesWhole(t *testing.T) {
-	write, seen, open := fixture(t, splitPaths)
+	write, seen, open := fixture(t, splitPaths, dynamicdelay.Options{})
 
 	require.GreaterOrEqual(t, open.count(), 2, "one socket cannot demonstrate a merge")
 
@@ -314,7 +319,7 @@ func TestMediaSplitAcrossPathsArrivesWhole(t *testing.T) {
 // The deduplication claim: the SRTP replay detector discards the copies a
 // spraying sender produces, so the relay forwards each packet once.
 func TestTheSamePacketOnEveryPathArrivesOnce(t *testing.T) {
-	write, seen, open := fixture(t, sprayPaths)
+	write, seen, open := fixture(t, sprayPaths, dynamicdelay.Options{})
 
 	require.GreaterOrEqual(t, open.count(), 2, "one socket cannot produce a duplicate")
 
@@ -325,4 +330,37 @@ func TestTheSamePacketOnEveryPathArrivesOnce(t *testing.T) {
 	assert.Equal(t, measured, present, "spraying must not cost packets")
 	assert.Zero(t, repeated,
 		"every path carried the same packet, so the replay detector has to drop the copies")
+}
+
+func TestDynamicDelayPreservesBondedMedia(t *testing.T) {
+	for _, scenario := range []struct {
+		name string
+		mode routing
+		skew time.Duration
+		rate int
+	}{
+		{name: "split", mode: splitPaths},
+		{name: "duplicates", mode: sprayPaths},
+		{name: "slow_path", mode: splitPaths, skew: 200 * time.Millisecond},
+		{name: "late_path", mode: splitPaths, skew: 2300 * time.Millisecond},
+		{name: "slow_catchup_late_path", mode: splitPaths, skew: 2300 * time.Millisecond, rate: 1},
+		{name: "fast_catchup_late_path", mode: splitPaths, skew: 2300 * time.Millisecond, rate: 100},
+		{name: "fast_catchup_duplicates", mode: sprayPaths, rate: 100},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			write, seen, open := fixture(t, scenario.mode, dynamicdelay.Options{
+				Enabled: true, CatchUpMSPerSecond: scenario.rate,
+			})
+			require.GreaterOrEqual(t, open.count(), 2)
+			open.mu.Lock()
+			open.skew = scenario.skew
+			open.mu.Unlock()
+			present, repeated := run(t, write, seen)
+			assert.Equal(t, measured, present)
+			assert.Zero(t, repeated)
+			if scenario.mode == sprayPaths {
+				assert.GreaterOrEqual(t, open.duplicates(), measured)
+			}
+		})
+	}
 }

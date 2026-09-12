@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+
+	"github.com/Anywaystv/wagaStrim/internal/dynamicdelay"
 )
 
 // Delay bounds are independent of the initial buffer for a new camera.
@@ -78,6 +80,7 @@ func CodecLabel(name string) string {
 
 // Ingest is one camera: a link pair, a codec set, and a playout target.
 type Ingest struct {
+	dynamicdelay.Options
 	ID          string   `json:"id"`
 	Label       string   `json:"label"`
 	SenderKey   string   `json:"senderKey"`
@@ -246,6 +249,7 @@ func (c *Config) normalise() {
 	for idx := range c.Ingests {
 		ing := &c.Ingests[idx]
 		ing.DelayMS = c.clampDelay(ing.DelayMS)
+		ing.Options = ing.Options.Normalize(ing.DelayMS)
 
 		ing.Codecs = keepCodecs(ing.Codecs)
 	}
@@ -335,6 +339,7 @@ func (c *Config) AddIngest(label string) (Ingest, error) {
 		ReceiverKey: receiverKey,
 		Codecs:      []string{CodecH264},
 		DelayMS:     c.clampDelay(DelayDefaultMS),
+		Options:     (dynamicdelay.Options{}).Normalize(c.clampDelay(DelayDefaultMS)),
 	})
 
 	if err := c.saveLocked(); err != nil {
@@ -364,6 +369,7 @@ func (c *Config) ReplaceIngests(next []Ingest) ([]string, error) {
 		ing := next[idx]
 		ing.Codecs = keepCodecs(ing.Codecs)
 		ing.DelayMS = c.clampDelay(ing.DelayMS)
+		ing.Options = ing.Options.Normalize(ing.DelayMS)
 		replacement[idx] = ing
 	}
 
@@ -583,7 +589,32 @@ func keepCodecs(codecs []string) []string {
 
 // SetDelay clamps to the permitted range and saves.
 func (c *Config) SetDelay(id string, delayMS int) error {
-	return c.update(id, func(ing *Ingest) { ing.DelayMS = c.clampDelay(delayMS) })
+	return c.update(id, func(ing *Ingest) {
+		ing.DelayMS = c.clampDelay(delayMS)
+		ing.Options = ing.Options.Normalize(ing.DelayMS)
+	})
+}
+
+// SetDynamicDelay saves the optional policy without changing the normal delay.
+func (c *Config) SetDynamicDelay(id string, options dynamicdelay.Options) error {
+	return c.update(id, func(ing *Ingest) { ing.Options = options.Normalize(ing.DelayMS) })
+}
+
+// DelayOptions keeps sync groups on their shared fixed delay.
+func (c *Config) DelayOptions(id string) dynamicdelay.Options {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	for _, ing := range c.Ingests {
+		if ing.ID == id {
+			options := ing.Options.Normalize(ing.DelayMS)
+			options.Enabled = options.Enabled && ing.SyncGroup == ""
+
+			return options
+		}
+	}
+
+	return dynamicdelay.Options{}
 }
 
 // Role says which half of an ingest a key belongs to.

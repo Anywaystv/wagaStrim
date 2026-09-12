@@ -123,6 +123,22 @@ there is no conflict detection.</p>
 <code>syncGroup</code>. Keys must be unique and cryptographically random.
 Strip the read-only <code>links</code> field from GET results before PUT.
 Missing cameras and changed keys/codecs disconnect sessions; 204 means saved.</p>
+<p>Dynamic delay is optional and off by default. These per-camera settings are saved
+and apply live without reconnecting:</p>
+<ul>
+  <li><code>dynamicDelay</code>: set to <code>true</code> to enable.</li>
+  <li><code>maxDelayMs</code>: maximum buffer target, from 1 to 10000 ms and at least <code>delayMs</code>.</li>
+  <li><code>catchUpMsPerSecond</code>: catch-up limit, from 1 to 100 ms of delay removed per second. Omitted or zero defaults to 10.</li>
+  <li><code>jumpAtMaximum</code>: allow a keyframe skip when the required delay exceeds the maximum.</li>
+</ul>
+<p>An omitted or zero <code>maxDelayMs</code> defaults to 10000 with jumping enabled.
+To disable jumps, send a positive maximum and <code>jumpAtMaximum: false</code>.</p>
+<p>Audio and video adjust together. The buffer grows by up to 50 ms per second for
+late packets, then catches up toward <code>delayMs</code> after five quiet seconds.
+Faster catch-up may cause stutters. A jump skips part of the stream and needs a
+keyframe from the sender. Without jumping, buffering stops growing at the maximum;
+packets may still arrive late. Sync groups keep their fixed delay. The player may
+add more delay, so these settings do not cap total playback latency.</p>
 </details>
 
 <h2>Errors</h2>

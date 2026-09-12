@@ -416,6 +416,8 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 		return
 	}
 
+	s.relay.ConfigureDelay(ing.ID, time.Duration(s.cfg.EffectiveDelay(ing.ID))*time.Millisecond,
+		s.cfg.DelayOptions(ing.ID))
 	buf := relay.NewBuffer(
 		time.Duration(s.cfg.EffectiveDelay(ing.ID))*time.Millisecond,
 		track.Codec().ClockRate,

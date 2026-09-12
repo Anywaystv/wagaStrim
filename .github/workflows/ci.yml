@@ -63,6 +63,9 @@ jobs:
       - name: packaging tool tests
         run: go test scripts/tools.go scripts/tools_test.go
 
+      - name: dashboard tests
+        run: node --test scripts/web.test.mjs internal/dynamicdelay/controls.test.mjs
+
       - name: test
         run: go test -race ./...
 

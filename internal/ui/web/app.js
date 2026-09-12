@@ -98,7 +98,7 @@ document.addEventListener("change", (ev) => {
     post("/api/ingests/group", {
       id: group.getAttribute("data-group"),
       group: group.value.trim(),
-    }).catch(() => {});
+    }).then(() => location.reload()).catch(() => {});
     return;
   }
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Anywaystv/wagaStrim/internal/dynamicdelay"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/assert"
@@ -451,7 +452,7 @@ func TestLatePacketsAreCounted(t *testing.T) {
 	assert.Equal(t, uint64(1), late, "a packet past its slot must be counted, not silently kept")
 }
 
-func TestRetargetReachesARunningBuffer(t *testing.T) {
+func TestConfigureDelayReachesARunningBuffer(t *testing.T) {
 	hub := New()
 
 	track, err := hub.Publish("cam", webrtc.RTPCodecTypeVideo, videoCodec(), nil)
@@ -462,7 +463,7 @@ func TestRetargetReachesARunningBuffer(t *testing.T) {
 	defer buf.Close()
 
 	hub.Track("cam", buf)
-	hub.Retarget("cam", 200*time.Millisecond)
+	hub.ConfigureDelay("cam", 200*time.Millisecond, dynamicdelay.Options{})
 
 	start := time.Now()
 	buf.Push(packet(1, 0, idr()...))
@@ -493,8 +494,8 @@ func TestLoweringTheTargetKeepsTheQueueInOrder(t *testing.T) {
 	}
 }
 
-func TestRetargetIgnoresAnUnknownIngest(t *testing.T) {
-	assert.NotPanics(t, func() { New().Retarget("gone", time.Second) })
+func TestConfigureDelayIgnoresAnUnknownIngest(t *testing.T) {
+	assert.NotPanics(t, func() { New().ConfigureDelay("gone", time.Second, dynamicdelay.Options{}) })
 }
 
 // A link that reconnects repeatedly must not leave closed buffers behind.
