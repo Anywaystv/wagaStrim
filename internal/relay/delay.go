@@ -26,11 +26,13 @@ type Buffer struct {
 	mime      string
 
 	// Mapping from the sender's RTP clock to ours, fixed on the first packet.
-	based    bool
-	baseRTP  uint32
-	baseWall time.Time
+	based     bool
+	baseRTP   uint32
+	baseWall  time.Time
+	senderRTP uint32
+	senderNTP uint64
 
-	// catchUp drops video until a keyframe allows the playout clock to reset.
+	// catchUp drops video until a keyframe can resume playback after correction.
 	catchUp  bool
 	keyframe func()
 
@@ -47,11 +49,12 @@ type Buffer struct {
 	late    uint64
 	dropped uint64
 
-	dynamic  *dynamicdelay.Controller
-	adjust   func(time.Time)
-	shift    time.Duration
-	cutoff   time.Time
-	peakLate time.Duration
+	dynamic    *dynamicdelay.Controller
+	stream     *Stream
+	recoveryAt time.Time
+	shift      time.Duration
+	cutoff     time.Time
+	peakLate   time.Duration
 }
 
 // Allow recovery bursts without triggering a skip, but scale the margin down
@@ -63,9 +66,6 @@ const (
 
 // maxPaceLag limits pacing debt to one 30fps frame; later packets bypass pacing.
 const maxPaceLag = 33 * time.Millisecond
-
-// resetCeiling drops the queue immediately rather than waiting for a keyframe.
-const resetCeiling = 10 * time.Second
 
 // correctionMargin is how far past its target a buffer may drift before it
 // skips. It follows the target rather than being a constant, because what counts
@@ -119,19 +119,20 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 		b.peakLate = max(b.peakLate, late)
 	}
 
-	if b.catchUp && !isKeyframe(b.mime, pkt.Payload) {
-		b.dropped++
-
-		return
-	}
-
 	if b.catchUp {
-		// Rebase the clock too, or the replacement keyframe retains the old drift.
+		if !isKeyframe(b.mime, pkt.Payload) {
+			b.dropped++
+
+			return
+		}
 		b.catchUp = false
 		b.dropAllLocked()
+	}
+	// Keep the anchor recent so a long stream cannot exceed the signed RTP
+	// delta range. Queued packets retain exactly the same playout times.
+	if rtpDelta(pkt.Timestamp, b.baseRTP) > int64(b.clockRate)*60 {
+		b.baseWall = playAt.Add(-b.target)
 		b.baseRTP = pkt.Timestamp
-		b.baseWall = time.Now()
-		playAt = b.playoutOf(pkt.Timestamp)
 	}
 
 	// Wake the reader only when its next deadline changes.
@@ -259,44 +260,15 @@ func (b *Buffer) depthLocked() time.Duration {
 	return max(0, time.Until(newest))
 }
 
-// Correct requests a keyframe to recover from excess depth and reports whether
-// correction started. Beyond resetCeiling it also discards queued packets.
+// Correct discards excess depth across registered tracks and requests a keyframe.
+// It reports whether a new clock correction started.
 func (b *Buffer) Correct() bool {
-	if b.adjust != nil {
-		b.adjust(time.Now())
-	}
-	b.mu.Lock()
-
-	// Intentional dynamic buffering is not RTP clock drift. Keep the original
-	// guard on the nominal queue depth so a 10-second target cannot trip it.
-	b.dynamicOffsetLocked(time.Now())
-	depth := b.depthLocked()
-	started := false
-
-	switch {
-	case depth > resetCeiling:
-		b.dropAllLocked()
-		b.catchUp = true
-		started = true
-	case b.catchUp:
-		// Retry the keyframe request: the previous PLI may have been lost.
-	case depth <= b.target+correctionMargin(b.target):
-		b.mu.Unlock()
-
+	if b.stream == nil {
 		return false
-	default:
-		b.catchUp = true
-		started = true
 	}
+	b.stream.adjustDelay(time.Now())
 
-	ask := b.keyframe
-	b.mu.Unlock()
-
-	if ask != nil {
-		ask()
-	}
-
-	return started
+	return b.stream.correctClocks()
 }
 
 // paceHoldLocked returns the pacing wait, or zero to send now. Packets sharing

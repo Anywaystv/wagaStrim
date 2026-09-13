@@ -5,8 +5,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import { clocksChanged } from "../internal/dynamicdelay/web/player.js";
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+
+class Peer {
+  iceGatheringState = "complete";
+  localDescription = { sdp: "" };
+  addTransceiver() {}
+  close() {}
+  async createOffer() { return {}; }
+  async setLocalDescription() {}
+  async setRemoteDescription() { this.ontrack({ streams: [{}] }); }
+  getReceivers() { return []; }
+}
 
 // These check client state transitions, not browser rendering or media decoding.
 function element(tag = "span") {
@@ -113,22 +125,14 @@ test("successful audio playback dismisses only the audio prompt", async () => {
   const video = { play: () => blocked ? Promise.reject(new Error("blocked")) : Promise.resolve() };
   const msg = { textContent: "Connecting", hidden: false };
   const body = {};
-  class Peer {
-    iceGatheringState = "complete";
-    localDescription = { sdp: "" };
-    addTransceiver() {}
-    async createOffer() { return {}; }
-    async setLocalDescription() {}
-    async setRemoteDescription() { this.ontrack({ streams: [{}] }); }
-    getReceivers() { return []; }
-  }
   const script = read("internal/egress/web/player.html").match(/<script>([\s\S]*?)<\/script>/)[1];
   runInNewContext(script, {
     location: { pathname: "/player/test" },
     document: { body, getElementById: id => id === "v" ? video : msg },
     RTCPeerConnection: Peer,
-    fetch: async () => ({ ok: true, headers: { get: () => "/whep/resource/test" }, text: async () => "" }),
-    addEventListener() {}, setTimeout,
+    fetch: async () => ({ ok: true, json: async () => ({ dynamicDelay: false }), headers: { get: () => "/whep/resource/test" }, text: async () => "" }),
+    addEventListener() {}, setTimeout(callback, delay) { return setTimeout(callback, delay).unref(); },
+    clearTimeout, AbortSignal,
   });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(msg.textContent, "Click to start audio");
@@ -142,4 +146,112 @@ test("successful audio playback dismisses only the audio prompt", async () => {
   msg.hidden = false;
   await body.onclick();
   assert.equal(msg.hidden, false);
+});
+
+test("a relay clock correction reconnects the custom player once with fresh references", async () => {
+  const script = read("internal/egress/web/player.html").match(/<script>([\s\S]*?)<\/script>/)[1];
+  let settings = { dynamicDelay: false, clocks: [
+    { kind: "video", mime: "video/H264", rate: 90000, timestamp: 90000, referenceMs: 1000 },
+    { kind: "audio", mime: "audio/opus", rate: 48000, timestamp: 48000, referenceMs: 1000 },
+  ] };
+  let closed = 0, attached = 0, removed = 0;
+  const timers = [];
+  const player = { attach: async () => { attached++; }, close() { closed++; }, update() {} };
+  const context = {
+    location: { pathname: "/player/test" },
+    document: { body: {}, getElementById: () => ({ play: async () => {}, hidden: true }) },
+    RTCPeerConnection: Peer, AbortSignal,
+    fetch: async (path, options) => {
+      if (options?.method === "DELETE") removed++;
+      return { ok: true, json: async () => structuredClone(settings),
+        headers: { get: () => "/whep/resource/test" }, text: async () => "" };
+    },
+    addEventListener() {}, setTimeout: callback => { timers.push(callback); return callback; },
+    clearTimeout() {},
+    testModule: { clocksChanged, supported: () => true, createPlayer: () => player }, testPlayer: player,
+  };
+  runInNewContext(script, context);
+  await new Promise(resolve => setImmediate(resolve));
+  // Start from an attached custom player without mocking media decoding in this state test.
+  runInNewContext("settings.dynamicDelay = true; active.player = testPlayer; playbackModule = testModule", context);
+  settings.dynamicDelay = true;
+  for (let step = 0; step < 4; step++) {
+    settings.clocks[1].referenceMs -= 20;
+    await timers.shift()();
+    assert.equal(closed, 0, "small changes should stay within the sync tolerance");
+  }
+  settings.clocks[1].referenceMs -= 40;
+  await timers.shift()();
+  assert.equal(closed, 1, "drift must be measured from the player, not the last poll");
+  timers.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  await timers.shift()();
+  assert.equal(closed, 1, "fresh clocks must not reconnect repeatedly");
+  closed = attached = removed = 0;
+  settings.clocks[1].referenceMs -= 2095.41;
+  await timers.shift()();
+  assert.equal(closed, 1);
+  assert.equal(removed, 1, "the stale WHEP session must be released");
+  timers.shift()();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(attached, 1, "the replacement player must attach");
+  assert.equal(runInNewContext("settings.clocks[1].referenceMs", context), settings.clocks[1].referenceMs);
+  await timers.shift()();
+  assert.equal(closed, 1, "unchanged references must not cause a reconnect loop");
+});
+
+test("settings polls back off within the shared request budget and keep playback running", async () => {
+  const script = read("internal/egress/web/player.html").match(/<script>([\s\S]*?)<\/script>/)[1];
+  let now = 0, tokens = 20, limited = false, denials = 0, lateDenials = 0, seed = 1, stopping = false;
+  const timers = [], notices = [], hide = [], lastRead = Array(64).fill(0), blockedUntil = Array(64).fill(0);
+  class WatchedPeer extends Peer {
+    close() { assert.ok(stopping, "rate-limited settings must not disconnect playback"); }
+  }
+  for (let index = 0; index < 64; index++) {
+    const notice = { textContent: "", hidden: true };
+    notices.push(notice);
+    runInNewContext(script, {
+      location: { pathname: "/player/test" },
+      document: { body: {}, getElementById: id => id === "v" ? { play: async () => {} }
+        : id === "notice" ? notice : { textContent: "Connecting" } },
+      RTCPeerConnection: WatchedPeer, AbortSignal, Date: { now: () => now },
+      Math: Object.assign(Object.create(Math), { random: () => ((seed = (seed * 16807) % 2147483647) / 2147483647) }),
+      fetch: async path => {
+        if (path.endsWith("/playback") && limited) {
+          assert.ok(now >= blockedUntil[index], "Retry-After must be respected");
+          if (tokens < 1) {
+            denials++;
+            blockedUntil[index] = now + 2000;
+            if (now > 180000) lateDenials++;
+            return { ok: false, status: 429, headers: { get: () => "2" } };
+          }
+          tokens--;
+          lastRead[index] = now;
+        }
+        return { ok: true, json: async () => ({ dynamicDelay: false }),
+          headers: { get: () => "/whep/resource/test" }, text: async () => "" };
+      },
+      addEventListener: (event, callback) => { if (event === "pagehide") hide.push(callback); },
+      setTimeout: (callback, delay) => { const timer = { callback, at: now + delay }; timers.push(timer); return timer; },
+      clearTimeout: timer => { const index = timers.indexOf(timer); if (index >= 0) timers.splice(index, 1); },
+    });
+  }
+  await new Promise(resolve => setImmediate(resolve));
+  limited = true;
+  // The production guard allows 10 requests/s with a burst of 20 per source IP.
+  while (now < 300000) {
+    timers.sort((a, b) => a.at - b.at);
+    const next = timers.shift();
+    assert.ok(next, "settings must keep refreshing");
+    tokens = Math.min(20, tokens + (next.at - now) / 100);
+    now = next.at;
+    await next.callback();
+  }
+  assert.ok(denials > 0, "the fixture must exercise rate limiting");
+  assert.equal(lateDenials, 0, "polls must settle below the shared allowance");
+  assert.ok(lastRead.every(time => now - time < 40000), "every viewer must keep receiving settings");
+  assert.ok(notices.every(notice => notice.hidden), "temporary rate limits must not cover the video");
+  stopping = true;
+  hide.forEach(callback => callback());
+  assert.equal(timers.length, 0, "closing the pages must stop settings polling");
 });

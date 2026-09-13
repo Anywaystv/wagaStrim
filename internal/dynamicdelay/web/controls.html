@@ -3,7 +3,7 @@
 {{define "dynamicdelay"}}
 <fieldset class="field" data-dynamic-delay="{{.ID}}"
           data-enabled="{{.Enabled}}" data-maximum="{{.MaximumMS}}" data-jump="{{.Jump}}"
-          data-speed="{{.CatchUpMSPerSecond}}"
+          data-speed="{{.CatchUpMSPerSecond}}" data-auto="{{.Automatic}}"
           {{if .SyncGroup}}disabled{{end}}>
   <legend>Dynamic delay</legend>
   <label class="row">
@@ -18,12 +18,21 @@
     </label>
     <input type="range" id="maximum-{{.ID}}" min="{{if .DelayMS}}{{.DelayMS}}{{else}}1{{end}}" max="10000" step="1"
            value="{{.MaximumMS}}" data-dynamic-maximum>
+    <label class="row">
+      <input type="checkbox" data-dynamic-auto {{if .Automatic}}checked{{end}}
+             aria-controls="manual-speed-{{.ID}}" aria-describedby="auto-speed-help-{{.ID}}">
+      <span>Automatic catch-up speed</span>
+    </label>
+    <p class="muted" id="auto-speed-help-{{.ID}}">Speeds up from 1.01x to 1.2x as delay approaches the maximum.</p>
+    <div id="manual-speed-{{.ID}}" data-dynamic-manual {{if .Automatic}}hidden{{end}}>
     <label for="catchup-{{.ID}}" class="delay-label">
       <span>Catch-up speed</span><span><output data-dynamic-speedout>{{.CatchUpMSPerSecond}}</output> ms/s</span>
     </label>
-    <input type="range" id="catchup-{{.ID}}" min="1" max="100" step="1"
+    <input type="range" id="catchup-{{.ID}}" min="1" max="200" step="1"
            value="{{.CatchUpMSPerSecond}}" data-dynamic-speed aria-describedby="catchup-help-{{.ID}}">
-    <p class="muted" id="catchup-help-{{.ID}}">Maximum delay removed each second. Faster catch-up may cause stutters. Default: 10 ms/s.</p>
+    <p class="muted" id="catchup-help-{{.ID}}">Maximum delay removed each second. 200 ms/s is 1.2x playback.</p>
+    </div>
+    <p class="muted">Smooth catch-up uses H.264, H.265 or AV1 with Opus in the built-in player; other players may stutter at higher speeds.</p>
     <label class="row">
       <input type="checkbox" data-dynamic-jump {{if .Jump}}checked{{end}}>
       <span>Jump back if the maximum is exceeded</span>

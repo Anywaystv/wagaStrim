@@ -15,10 +15,11 @@ const MaximumMS = 10000
 
 // Options are persisted with each camera. A zero value leaves adaptation off.
 type Options struct {
-	Enabled            bool `json:"dynamicDelay,omitempty"`
-	MaximumMS          int  `json:"maxDelayMs,omitempty"`
-	Jump               bool `json:"jumpAtMaximum"`
-	CatchUpMSPerSecond int  `json:"catchUpMsPerSecond,omitempty"`
+	Enabled            bool  `json:"dynamicDelay,omitempty"`
+	MaximumMS          int   `json:"maxDelayMs,omitempty"`
+	Jump               bool  `json:"jumpAtMaximum"`
+	CatchUpMSPerSecond int   `json:"catchUpMsPerSecond,omitempty"`
+	AutoCatchUp        *bool `json:"autoCatchUp,omitempty"`
 }
 
 // Normalize supplies defaults and keeps the maximum above the normal delay.
@@ -31,9 +32,29 @@ func (o Options) Normalize(baseMS int) Options {
 	if o.CatchUpMSPerSecond == 0 {
 		o.CatchUpMSPerSecond = 10
 	}
-	o.CatchUpMSPerSecond = max(1, min(100, o.CatchUpMSPerSecond))
+	o.CatchUpMSPerSecond = max(1, min(200, o.CatchUpMSPerSecond))
+	if o.AutoCatchUp == nil {
+		automatic := true
+		o.AutoCatchUp = &automatic
+	}
 
 	return o
+}
+
+// Automatic treats older camera settings as automatic until explicitly disabled.
+func (o Options) Automatic() bool {
+	return o.AutoCatchUp == nil || *o.AutoCatchUp
+}
+
+// CatchUp reaches 200ms/s at 90% of the space above the normal delay.
+func (o Options) CatchUp(current, base time.Duration) time.Duration {
+	if !o.Automatic() {
+		return time.Duration(o.CatchUpMSPerSecond) * time.Millisecond
+	}
+	span := max(time.Millisecond, time.Duration(o.MaximumMS)*time.Millisecond-base)
+	speed := min(200, 10+int(1900*max(0, current-base)/(9*span)))
+
+	return time.Duration(speed) * time.Millisecond
 }
 
 // State is an immutable playout curve shared by both tracks.
@@ -80,6 +101,7 @@ func (c *Controller) Configure(base time.Duration, options Options, now time.Tim
 	options = options.Normalize(int(base / time.Millisecond))
 	previous := c.options
 	previous.CatchUpMSPerSecond = options.CatchUpMSPerSecond
+	previous.AutoCatchUp = options.AutoCatchUp
 	if c.base == base && previous == options {
 		// Changing speed must preserve growth, quiet time and a pending jump.
 		c.options = options
@@ -125,7 +147,7 @@ func (c *Controller) Step(now time.Time, late time.Duration) *State {
 	next.Start, next.From = now, current
 	exceeded := c.updateGoal(now, current, late)
 	next.Pending = state.Pending || (c.options.Enabled && c.options.Jump && exceeded)
-	catchUp := time.Duration(c.options.CatchUpMSPerSecond) * time.Millisecond
+	catchUp := c.options.CatchUp(current, c.base)
 	next.To = max(current-catchUp, min(current+50*time.Millisecond, c.goal))
 	c.state.Store(&next)
 

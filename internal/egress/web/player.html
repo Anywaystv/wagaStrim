@@ -11,14 +11,18 @@
     color: #8a8a8a; font: 14px/1.5 system-ui, sans-serif; text-align: center; padding: 1rem;
   }
   #msg[hidden] { display: none }
+  #notice { position: absolute; bottom: 0; margin: 0; padding: 0.4rem; color: #fff;
+    background: #000b; font: 12px/1.4 system-ui, sans-serif }
 </style>
 <video id="v" autoplay playsinline></video>
 <div id="msg">Connecting</div>
+<p id="notice" role="status" hidden></p>
 <script>
   // The receiver key is in the path, so this page is the whole configuration.
   const endpoint = location.pathname.replace("/player/", "/whep/");
   const video = document.getElementById("v");
   const msg = document.getElementById("msg");
+  const notice = document.getElementById("notice");
 
   const say = (text) => {
     msg.textContent = text;
@@ -27,6 +31,29 @@
 
   let resource = null;
   let retry = 1000;
+  let active = null;
+  let stopped = false;
+  let standardOnly = false;
+  let poll, pollDelay = 1000;
+  let settings = null;
+  let generation = 0;
+  let playbackModule;
+  const settingsWarning = "Playback settings unavailable. Keeping the current settings.";
+
+  const play = () => video.play().then(() => {
+    if (msg.textContent === "Click to start audio" || msg.textContent === "Connecting") msg.hidden = true;
+  }).catch(() => say("Click to start audio"));
+  const playbackSettings = async () => {
+    const response = await fetch(location.pathname + "/playback", { cache: "no-store", signal: AbortSignal.timeout(5000) });
+    if (response.status === 429) {
+      const error = new Error("Playback settings busy. Retrying shortly.");
+      const after = response.headers.get("retry-after");
+      error.retryAfter = Math.max(1000, Number(after) * 1000 || Date.parse(after) - Date.now() || 2000);
+      throw error;
+    }
+    if (!response.ok) throw new Error("Cannot read playback settings");
+    return response.json();
+  };
 
   // What the receiver is asked to hold before playing, in milliseconds. Enough
   // to cover the clump a frame arrives in plus a phone uplink's jitter, and
@@ -35,10 +62,14 @@
   // that one absorbs the network, this one keeps the decoder's cadence steady.
   const jitterTargetMS = 300;
 
-  // sendBeacon can only POST and the teardown route is a DELETE, so nothing a
-  // Browser Source did ever released its session; it sat on the server until
-  // ICE timed out. keepalive is what lets the request outlive the page.
-  const release = () => {
+  const disconnect = () => {
+    if (active) {
+      active.peer.onconnectionstatechange = null;
+      active.peer.close();
+      active.player?.close();
+      active = null;
+    }
+    // DELETE releases the session; keepalive lets it finish after page close.
     if (resource) fetch(resource, { method: "DELETE", keepalive: true }).catch(() => {});
     resource = null;
   };
@@ -49,50 +80,94 @@
   // arrives after the state handler already gave up would otherwise fork the
   // loop in two, and each half forks again on its next failure.
   let pending = null;
-  const attempt = () => connect().catch((err) => { say(String(err)); later(); });
+  const attempt = () => {
+    const current = ++generation;
+    return connect().catch(err => {
+      if (stopped || generation !== current) return;
+      disconnect(); say(String(err)); later();
+    });
+  };
   const later = () => {
-    if (pending) return;
+    if (stopped || pending) return;
     pending = setTimeout(() => { pending = null; attempt(); }, retry);
     retry = Math.min(retry * 2, 15000);
   };
 
   async function connect() {
-    const peer = new RTCPeerConnection();
+    disconnect();
+    settings = await playbackSettings();
+    if (stopped) return;
+    let module = null;
+    if (settings.dynamicDelay && !standardOnly) {
+      playbackModule ||= await import(location.pathname + "/dynamic/player.js?attempt=" + generation);
+      module = playbackModule;
+      if (!module.supported(settings)) {
+        module = null;
+        notice.textContent = "Standard playback: smooth catch-up needs H264/H265/AV1, Opus and a compatible browser.";
+        notice.hidden = false;
+      }
+    }
+    if (stopped) return;
+    const peer = new RTCPeerConnection(module ? { encodedInsertableStreams: true } : {});
+    const current = active = { peer, player: null, clocks: settings.clocks };
 
     peer.addTransceiver("video", { direction: "recvonly" });
     peer.addTransceiver("audio", { direction: "recvonly" });
 
     peer.ontrack = (ev) => {
-      video.srcObject = ev.streams[0];
+      if (active !== current) return;
+      if (!current.player) video.srcObject = ev.streams[0];
       msg.hidden = true;
       retry = 1000;
     };
 
     peer.onconnectionstatechange = () => {
+      if (active !== current) return;
       if (peer.connectionState === "failed" || peer.connectionState === "disconnected") {
-        peer.close();
-        release();
+        disconnect();
         say("Reconnecting");
         later();
       }
     };
 
+    if (module) {
+      current.player = module.createPlayer(video, settings, (text, retryable = false) => {
+        standardOnly = !retryable;
+        if (!retryable) { notice.textContent = text; notice.hidden = false; }
+        else say(text);
+        disconnect();
+        later();
+      }, play);
+      await current.player.attach(peer.getReceivers());
+    }
+    if (active !== current) return;
+
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
-    await new Promise((done) => {
+    await new Promise((done, reject) => {
       if (peer.iceGatheringState === "complete") return done();
-      peer.onicegatheringstatechange = () =>
-        peer.iceGatheringState === "complete" && done();
+      const timeout = setTimeout(() => reject(new Error("Connection setup timed out")), 15000);
+      peer.onicegatheringstatechange = () => {
+        if (peer.iceGatheringState === "complete") { clearTimeout(timeout); done(); }
+      };
     });
+    if (active !== current || stopped) return;
 
     const res = await fetch(endpoint, {
       method: "POST",
       headers: { "content-type": "application/sdp" },
       body: peer.localDescription.sdp,
+      signal: AbortSignal.timeout(15000),
     });
 
+    if (active !== current || stopped) {
+      const orphan = res.headers.get("location");
+      if (orphan) fetch(orphan, { method: "DELETE", keepalive: true }).catch(() => {});
+      return;
+    }
+
     if (!res.ok) {
-      peer.close();
+      disconnect();
       say(await res.text());
       later();
       return;
@@ -109,6 +184,7 @@
     // standard name, playoutDelayHint is what older builds understand, and a
     // build with neither ignores both.
     for (const receiver of peer.getReceivers()) {
+      if (current.player) break;
       if (receiver.track && receiver.track.kind !== "video") continue;
       if ("jitterBufferTarget" in receiver) receiver.jitterBufferTarget = jitterTargetMS;
       else if ("playoutDelayHint" in receiver) receiver.playoutDelayHint = jitterTargetMS / 1000;
@@ -117,14 +193,50 @@
     // OBS sets autoplay-policy=no-user-gesture-required, so unmuted playback
     // starts on its own there. An ordinary browser will refuse; say so rather
     // than showing a black rectangle.
-    const play = () => video.play().then(() => {
-      if (msg.textContent === "Click to start audio") msg.hidden = true;
-    }).catch(() => say("Click to start audio"));
-    play();
+    if (!current.player) play();
     document.body.onclick = play;
   }
 
-  addEventListener("pagehide", release);
+  const pollSettings = async () => {
+    const current = active;
+    let retryAfter = 0;
+    try {
+      if (!current || stopped) return;
+      const next = await playbackSettings();
+      if (stopped || active !== current) return;
+      if (notice.textContent === settingsWarning) notice.hidden = true;
+      const tracks = value => (value.clocks || []).map(track => track.kind + ":" + track.mime).sort().join();
+      if (!!next.dynamicDelay !== !!settings.dynamicDelay || (next.dynamicDelay && tracks(next) !== tracks(settings))
+          || (current.player && playbackModule.clocksChanged(current.clocks, next.clocks))) {
+        standardOnly = false;
+        notice.hidden = true;
+        disconnect();
+        later();
+      } else active.player?.update(next);
+      settings = next;
+    } catch (error) {
+      if (stopped || active !== current) return;
+      if (error.retryAfter) {
+        // Retain the slower interval so multiple viewers do not saturate it again.
+        pollDelay = Math.min(30000, pollDelay * 2);
+        retryAfter = error.retryAfter;
+        return;
+      }
+      // Keep the current policy through a temporary settings outage.
+      notice.textContent = settingsWarning;
+      notice.hidden = false;
+    } finally {
+      if (!stopped) poll = setTimeout(pollSettings, Math.max(pollDelay, retryAfter) + Math.random() * pollDelay / 4);
+    }
+  };
+  poll = setTimeout(pollSettings, 1000);
+
+  addEventListener("pagehide", () => {
+    stopped = true;
+    clearTimeout(poll);
+    clearTimeout(pending);
+    disconnect();
+  });
 
   attempt();
 </script>

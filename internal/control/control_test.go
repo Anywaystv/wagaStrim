@@ -195,10 +195,12 @@ func TestDynamicDelayAppliesLiveWithoutRevokingTheCamera(t *testing.T) {
 		applied = append(applied, id)
 		assert.Equal(t, 300, delayMS)
 		assert.True(t, cfg.DelayOptions(id).Enabled)
-		assert.Equal(t, 50, cfg.DelayOptions(id).CatchUpMSPerSecond)
+		assert.Equal(t, 200, cfg.DelayOptions(id).CatchUpMSPerSecond)
+		assert.False(t, cfg.DelayOptions(id).Automatic())
 	}
 	body := strings.Replace(list("a"), `"delayMs":300`,
-		`"delayMs":300,"dynamicDelay":true,"maxDelayMs":4500,"jumpAtMaximum":false,"catchUpMsPerSecond":50`, 1)
+		`"delayMs":300,"dynamicDelay":true,"maxDelayMs":4500,"jumpAtMaximum":false,`+
+			`"catchUpMsPerSecond":200,"autoCatchUp":false`, 1)
 	require.Equal(t, http.StatusNoContent, put(t, srv, token, body).Code)
 	assert.Equal(t, []string{"cam1"}, applied)
 	assert.Empty(t, *revoked)

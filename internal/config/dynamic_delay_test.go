@@ -18,9 +18,12 @@ func TestDynamicDelayPersistsBoundsAndPreservesFixedGroups(t *testing.T) {
 	camera, err := cfg.AddIngest("Camera")
 	require.NoError(t, err)
 	assert.False(t, camera.Enabled)
+	assert.True(t, camera.Automatic())
 	assert.Equal(t, 10000, camera.MaximumMS)
 	assert.Equal(t, 10, camera.CatchUpMSPerSecond)
-	options := dynamicdelay.Options{Enabled: true, MaximumMS: 2500, Jump: false, CatchUpMSPerSecond: 50}
+	options := dynamicdelay.Options{
+		Enabled: true, MaximumMS: 2500, Jump: false, CatchUpMSPerSecond: 200, AutoCatchUp: new(false),
+	}
 	require.NoError(t, cfg.SetDynamicDelay(camera.ID, options))
 	require.NoError(t, cfg.SetDelay(camera.ID, 3000))
 	assert.Equal(t, 3000, cfg.DelayOptions(camera.ID).MaximumMS)
@@ -29,7 +32,8 @@ func TestDynamicDelayPersistsBoundsAndPreservesFixedGroups(t *testing.T) {
 	assert.False(t, cfg.DelayOptions(camera.ID).Enabled)
 	require.NoError(t, cfg.SetSyncGroup(camera.ID, ""))
 	assert.True(t, cfg.DelayOptions(camera.ID).Enabled)
-	assert.Equal(t, 50, cfg.DelayOptions(camera.ID).CatchUpMSPerSecond)
+	assert.Equal(t, 200, cfg.DelayOptions(camera.ID).CatchUpMSPerSecond)
+	assert.False(t, cfg.DelayOptions(camera.ID).Automatic())
 	raw, err := os.ReadFile(cfg.path)
 	require.NoError(t, err)
 	var saved Config

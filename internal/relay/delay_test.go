@@ -40,6 +40,13 @@ func idr() []byte { return []byte{h264IDR} }
 // interFrame is a payload that does not.
 func interFrame() []byte { return []byte{0x01} }
 
+func registerBuffer(t *testing.T, buf *Buffer) {
+	t.Helper()
+	hub, _ := livePublisher(t)
+	hub.streams["cam"].keyframe = buf.keyframe
+	hub.Track("cam", buf)
+}
+
 func TestDropAllReleasesPacketReferences(t *testing.T) {
 	buf := NewBuffer(time.Second, testClock, "video/H264", nil)
 	defer buf.Close()
@@ -121,6 +128,7 @@ func TestDriftCorrectionSkipsToAKeyframe(t *testing.T) {
 		}
 	})
 	defer buf.Close()
+	registerBuffer(t, buf)
 
 	// Timestamps far in the future: the sender is running ahead of its own clock,
 	// which is the drift no amount of waiting resolves.
@@ -160,18 +168,19 @@ func TestADepthPastTenSecondsIsEmptiedRatherThanHeld(t *testing.T) {
 		}
 	})
 	defer buf.Close()
+	registerBuffer(t, buf)
 
 	buf.Push(packet(1, 0, idr()...))
 
 	// Twelve seconds of timestamps against a 50ms target. A publisher that never
 	// answers the first keyframe request leaves the buffer here indefinitely,
-	// which is the case this ceiling exists for.
+	// which must be discarded even before a keyframe arrives.
 	for seq := uint16(2); seq < 14; seq++ {
 		buf.Push(packet(seq, uint32(seq)*12*testClock/12, interFrame()...))
 	}
 
 	buf.Push(packet(14, 12*testClock, interFrame()...))
-	require.Greater(t, buf.depth(), resetCeiling, "the queue must be past the ceiling for this test to mean anything")
+	require.Greater(t, buf.depth(), 10*time.Second, "the queue must exceed ten seconds for this test to mean anything")
 
 	require.True(t, buf.Correct(), "a queue past the ceiling must correct")
 	assert.Zero(t, buf.depth(), "the queue must be emptied rather than held for a keyframe")
@@ -192,6 +201,7 @@ func TestASkipWaitingOnAKeyframeAsksAgainEverySecond(t *testing.T) {
 		}
 	})
 	defer buf.Close()
+	registerBuffer(t, buf)
 
 	buf.Push(packet(1, 0, idr()...))
 	buf.Push(packet(2, 12*testClock, interFrame()...))
@@ -203,6 +213,7 @@ func TestASkipWaitingOnAKeyframeAsksAgainEverySecond(t *testing.T) {
 	// leaves the picture frozen here, so every later pass has to ask again.
 	buf.Push(packet(3, 24*testClock, interFrame()...))
 	require.Zero(t, buf.depth(), "inter frames are dropped while catching up")
+	buf.stream.lastKeyframe = time.Now().Add(-time.Second)
 	assert.False(t, buf.Correct(), "asking again is not a new correction")
 
 	select {
@@ -325,6 +336,7 @@ func TestCorrectIsQuietWhenHealthy(t *testing.T) {
 		require.Fail(t, "a healthy buffer must not request keyframes")
 	})
 	defer buf.Close()
+	registerBuffer(t, buf)
 
 	buf.Push(packet(1, 0, idr()...))
 	assert.False(t, buf.Correct(), "depth at the target is not drift")

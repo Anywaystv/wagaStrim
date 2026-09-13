@@ -349,7 +349,7 @@ func TestDynamicDelayPreservesBondedMedia(t *testing.T) {
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			write, seen, open := fixture(t, scenario.mode, dynamicdelay.Options{
-				Enabled: true, CatchUpMSPerSecond: scenario.rate,
+				Enabled: true, CatchUpMSPerSecond: scenario.rate, AutoCatchUp: new(scenario.rate == 0),
 			})
 			require.GreaterOrEqual(t, open.count(), 2)
 			open.mu.Lock()

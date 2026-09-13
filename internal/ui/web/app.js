@@ -84,15 +84,6 @@ document.addEventListener("input", (ev) => {
 });
 
 document.addEventListener("change", (ev) => {
-  const slider = ev.target.closest("[data-delay]");
-  if (slider) {
-    post("/api/ingests/delay", {
-      id: slider.getAttribute("data-delay"),
-      delayMs: Number(slider.value),
-    }).catch(() => {});
-    return;
-  }
-
   const group = ev.target.closest("[data-group]");
   if (group) {
     post("/api/ingests/group", {

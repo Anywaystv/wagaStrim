@@ -14,11 +14,13 @@ import (
 func TestDefaultsAndBounds(t *testing.T) {
 	defaults := (Options{}).Normalize(2000)
 	assert.False(t, defaults.Enabled)
+	assert.True(t, defaults.Automatic())
+	assert.False(t, (Options{AutoCatchUp: new(false)}).Normalize(2000).Automatic())
 	assert.Equal(t, MaximumMS, defaults.MaximumMS)
 	assert.True(t, defaults.Jump)
 	assert.Equal(t, 10, defaults.CatchUpMSPerSecond)
 	assert.Equal(t, 1, (Options{CatchUpMSPerSecond: -1}).Normalize(2000).CatchUpMSPerSecond)
-	assert.Equal(t, 100, (Options{CatchUpMSPerSecond: 999}).Normalize(2000).CatchUpMSPerSecond)
+	assert.Equal(t, 200, (Options{CatchUpMSPerSecond: 999}).Normalize(2000).CatchUpMSPerSecond)
 	assert.Equal(t, 2000, (Options{MaximumMS: 100}).Normalize(2000).MaximumMS)
 	assert.Equal(t, MaximumMS, (Options{MaximumMS: 20000}).Normalize(2000).MaximumMS)
 	assert.False(t, (Options{MaximumMS: 10000, Jump: false}).Normalize(2000).Jump)
@@ -36,7 +38,7 @@ func TestFixedDelayDoesNotCreateACurve(t *testing.T) {
 func TestLateArrivalGrowsThenCatchesUpWithoutJump(t *testing.T) {
 	var control Controller
 	now := time.Unix(100, 0)
-	control.Configure(2*time.Second, Options{Enabled: true, MaximumMS: 10000, Jump: true}, now)
+	control.Configure(2*time.Second, Options{Enabled: true, MaximumMS: 10000, Jump: true, AutoCatchUp: new(false)}, now)
 	initial := control.Step(now, 300*time.Millisecond)
 	require.NotNil(t, initial)
 	assert.Equal(t, 2025*time.Millisecond, initial.Delay(now.Add(500*time.Millisecond)))
@@ -80,16 +82,6 @@ func TestCeilingJumpCanBeDisabledAndPreservesClockAcrossToggle(t *testing.T) {
 	assert.Equal(t, 2*time.Second, control.State().Shift)
 }
 
-func TestUnchangedConfigurationDoesNotInterruptGrowth(t *testing.T) {
-	var control Controller
-	now := time.Unix(100, 0)
-	options := Options{Enabled: true, MaximumMS: 10000, Jump: true}
-	control.Configure(time.Second, options, now)
-	first := control.Step(now, 300*time.Millisecond)
-	control.Configure(time.Second, options, now.Add(500*time.Millisecond))
-	assert.Same(t, first, control.State())
-}
-
 func TestPersistentLatenessStopsAtTheMaximumWithoutJumping(t *testing.T) {
 	var control Controller
 	now := time.Unix(100, 0)
@@ -126,10 +118,10 @@ func TestSampleStartedBeforeJumpCannotScheduleAnotherJump(t *testing.T) {
 }
 
 func TestCatchUpRateAndLiveChangesPreserveTheTarget(t *testing.T) {
-	for _, rate := range []int{1, 10, 100} {
+	for _, rate := range []int{1, 10, 100, 200} {
 		var control Controller
 		now := time.Unix(100, 0)
-		options := Options{Enabled: true, MaximumMS: 10000, CatchUpMSPerSecond: rate}
+		options := Options{Enabled: true, MaximumMS: 10000, CatchUpMSPerSecond: rate, AutoCatchUp: new(false)}
 		control.Configure(3*time.Second, options, now)
 		control.Configure(2*time.Second, options, now)
 		state := control.Step(now, 0)
@@ -156,10 +148,43 @@ func TestChangingSpeedPreservesRecoveryInProgress(t *testing.T) {
 		options := Options{Enabled: true, MaximumMS: 3000, Jump: true}
 		control.Configure(2*time.Second, options, now)
 		before := control.Step(now, late)
+		control.Configure(2*time.Second, options, now.Add(500*time.Millisecond))
+		assert.Same(t, before, control.State(), "resaving unchanged settings must preserve recovery")
 		options.CatchUpMSPerSecond = 100
+		options.AutoCatchUp = new(false)
 		control.Configure(2*time.Second, options, now.Add(500*time.Millisecond))
 		assert.Equal(t, before.Pending, control.State().Pending, "speed changes must not cancel a requested jump")
 		after := control.Step(now.Add(time.Second), 0)
 		assert.Greater(t, after.To, after.From, "the existing late-arrival target must survive a speed change")
 	}
+}
+
+func TestAutomaticCatchUpScalesWithinHeadroomAndFinishes(t *testing.T) {
+	options := (Options{Enabled: true}).Normalize(2000)
+	for _, sample := range []struct {
+		delay, speed time.Duration
+	}{
+		{2 * time.Second, 10 * time.Millisecond},
+		{5600 * time.Millisecond, 105 * time.Millisecond},
+		{9200 * time.Millisecond, 200 * time.Millisecond},
+		{12 * time.Second, 200 * time.Millisecond},
+	} {
+		assert.Equal(t, sample.speed, options.CatchUp(sample.delay, 2*time.Second))
+	}
+	assert.Equal(t, 10*time.Millisecond, options.CatchUp(10*time.Second, 10*time.Second))
+	var control Controller
+	now := time.Unix(100, 0)
+	control.Configure(10*time.Second, options, now)
+	control.Configure(2*time.Second, options, now)
+	previous := 200 * time.Millisecond
+	for second := range 180 {
+		state := control.Step(now.Add(time.Duration(second)*time.Second), 0)
+		change := state.From - state.To
+		assert.GreaterOrEqual(t, state.To, 2*time.Second)
+		assert.GreaterOrEqual(t, change, time.Duration(0))
+		assert.LessOrEqual(t, change, previous)
+		assert.False(t, state.Pending)
+		previous = change
+	}
+	assert.Equal(t, 2*time.Second, control.State().To)
 }

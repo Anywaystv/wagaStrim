@@ -69,6 +69,7 @@ func TestMaximumDynamicDelayIsNotClockDrift(t *testing.T) {
 	control.Configure(2*time.Second, options, now)
 	buf := NewBuffer(2*time.Second, testClock, "video/H264", nil)
 	defer buf.Close()
+	registerBuffer(t, buf)
 	buf.dynamic = &control
 	buf.based = true
 	buf.baseWall = now.Add(10 * time.Millisecond)
@@ -115,23 +116,31 @@ func TestLiveDynamicConfigurationCanRunAlongsidePackets(t *testing.T) {
 	<-done
 }
 
-func TestEnablingDynamicDelayIgnoresEarlierLatePackets(t *testing.T) {
-	hub, _ := livePublisher(t)
-	buf := NewBuffer(time.Second, testClock, "video/H264", nil)
-	defer buf.Close()
-	hub.Track("cam", buf)
-	hub.ConfigureDelay("cam", time.Second, dynamicdelay.Options{})
-	buf.based = true
-	buf.baseWall = time.Now().Add(-4 * time.Second)
-	buf.Push(packet(1, 0, idr()...))
-	require.Positive(t, buf.peakLate)
+func TestDynamicSettingsPreserveOnlyCurrentLateness(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "enable", true: "resave"}[enabled], func(t *testing.T) {
+			hub, _ := livePublisher(t)
+			options := dynamicdelay.Options{Enabled: enabled, MaximumMS: 2000, Jump: true}
+			hub.ConfigureDelay("cam", time.Second, options)
+			buf := NewBuffer(time.Second, testClock, "video/H264", nil)
+			defer buf.Close()
+			hub.Track("cam", buf)
+			buf.based = true
+			buf.baseWall = time.Now().Add(-4 * time.Second)
+			buf.Push(packet(1, 0, idr()...))
+			require.Positive(t, buf.peakLate)
 
-	hub.ConfigureDelay("cam", time.Second, dynamicdelay.Options{Enabled: true, MaximumMS: 2000, Jump: true})
-	buf.adjust(time.Now())
-	state := buf.dynamic.State()
-	require.NotNil(t, state)
-	assert.False(t, state.Pending, "old lateness must not request a recovery jump")
-	assert.Equal(t, time.Second, state.To)
+			options.Enabled = true
+			hub.ConfigureDelay("cam", time.Second, options)
+			buf.stream.adjustDelay(time.Now())
+			state := buf.dynamic.State()
+			require.NotNil(t, state)
+			assert.Equal(t, enabled, state.Pending, "resaving preserves lateness; enabling clears old samples")
+			if !enabled {
+				assert.Equal(t, time.Second, state.To)
+			}
+		})
+	}
 }
 
 func TestCorrectionAppliesJumpBeforeSamplingOrDisabling(t *testing.T) {
@@ -159,7 +168,7 @@ func TestCorrectionAppliesJumpBeforeSamplingOrDisabling(t *testing.T) {
 				options.Enabled = false
 				hub.ConfigureDelay("cam", time.Second, options)
 			}
-			audio.adjust(now)
+			audio.stream.adjustDelay(now)
 			assert.Equal(t, video.baseWall, audio.baseWall, "an idle track must apply the shared jump")
 			assert.Empty(t, audio.queue)
 			if disable {
@@ -223,19 +232,4 @@ func TestFirstPacketAfterJumpDoesNotApplyHistoricalShift(t *testing.T) {
 	buf.Push(packet(1, 0, 1))
 	assert.False(t, buf.baseWall.After(time.Now()), "a track starting after recovery anchors to its first arrival")
 	assert.Equal(t, control.State().Shift, buf.shift)
-}
-
-func TestResavingSameSettingsPreservesLatenessSample(t *testing.T) {
-	hub, _ := livePublisher(t)
-	options := dynamicdelay.Options{Enabled: true, MaximumMS: 2000, Jump: true}
-	hub.ConfigureDelay("cam", time.Second, options)
-	buf := NewBuffer(time.Second, testClock, "video/H264", nil)
-	defer buf.Close()
-	hub.Track("cam", buf)
-	buf.based = true
-	buf.baseWall = time.Now().Add(-4 * time.Second)
-	buf.Push(packet(1, 0, idr()...))
-	hub.ConfigureDelay("cam", time.Second, options)
-	buf.adjust(time.Now())
-	assert.True(t, buf.dynamic.State().Pending, "an unchanged API update must not erase recent lateness")
 }

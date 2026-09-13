@@ -25,10 +25,14 @@ const keyframeInterval = 500 * time.Millisecond
 type Stream struct {
 	mu sync.RWMutex
 
-	tracks     map[webrtc.RTPCodecType]*webrtc.TrackLocalStaticRTP
-	buffers    []*Buffer
-	delay      dynamicdelay.Controller
-	lastAdjust time.Time
+	tracks         map[webrtc.RTPCodecType]*webrtc.TrackLocalStaticRTP
+	buffers        []*Buffer
+	delay          dynamicdelay.Controller
+	lastAdjust     time.Time
+	recoveryAt     time.Time
+	recoveryShift  time.Duration
+	senderBaseMS   float64
+	senderBaseWall time.Time
 
 	// Request an IDR when viewers join, avoiding a wait for the next keyframe.
 	keyframe     func()
@@ -154,7 +158,8 @@ func (r *Relay) Track(ingestID string, buf *Buffer) {
 	defer stream.mu.Unlock()
 
 	stream.buffers = append(stream.buffers, buf)
-	buf.adjust = stream.adjustDelay
+	buf.stream = stream
+	buf.recoveryAt = stream.recoveryAt
 	if state := stream.delay.State(); state != nil {
 		buf.dynamic = &stream.delay
 		buf.shift = state.Shift
