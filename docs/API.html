@@ -149,7 +149,9 @@ packets may still arrive late. Sync groups keep their fixed delay. The player ma
 add more delay, so these settings do not cap total playback latency.</p>
 <p><code>GET /player/{receiverKey}/playback</code> returns the effective dynamic-delay
 settings, normal <code>delayMs</code>, current relay <code>currentDelayMs</code>, and
-recent RTP clock references for that camera. It requires the receiver
+recent RTP clock references for that camera. Each clock includes an <code>epoch</code>
+that changes after a backward sender timestamp reset has been applied; players
+restart their media timelines when it changes. It requires the receiver
 key and contains no stream keys. The built-in player normally refreshes it about once per second;
 after rate limiting, it keeps a slower interval for that page session and respects
 <code>Retry-After</code>. Playback continues with the last settings while waiting.

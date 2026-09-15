@@ -10,6 +10,7 @@ type Clock struct {
 	Rate        uint32  `json:"rate"`
 	Timestamp   uint32  `json:"timestamp"`
 	ReferenceMS float64 `json:"referenceMs"`
+	Epoch       uint64  `json:"epoch"`
 }
 
 // Playback contains only the settings and clocks needed by one receiver.

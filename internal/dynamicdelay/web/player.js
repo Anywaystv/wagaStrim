@@ -14,6 +14,7 @@ export function rtpClock(clock, originMS) {
 
 // Compare with the attached player's clocks so small changes cannot accumulate unnoticed.
 export function clocksChanged(previous, next) {
+  if (next.some(clock => clock.epoch !== previous.find(track => track.kind === clock.kind).epoch)) return true;
   const shifts = next.map(clock => {
     const before = previous.find(track => track.kind === clock.kind);
     const shift = clock.referenceMs - before.referenceMs

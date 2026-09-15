@@ -103,3 +103,72 @@ func TestLongStreamPlayoutKeepsRecentRTPAnchor(t *testing.T) {
 		buf.Close()
 	}
 }
+
+func TestSharedSenderResetPublishesFreshClocksAfterClearingOldMedia(t *testing.T) {
+	for _, milliseconds := range []uint32{100, 3600000} {
+		elapsed := time.Duration(milliseconds) * time.Millisecond
+		t.Run(elapsed.String(), func(t *testing.T) {
+			hub, _ := livePublisher(t)
+			video, audio := clockBuffers(t, hub, time.Now().Add(-elapsed), "video/H264")
+			ntp := uint64(4_000_000_000) << 32
+			for _, buf := range []*Buffer{video, audio} {
+				stamp := milliseconds * (buf.clockRate / 1000)
+				buf.Push(packet(1, stamp, idr()...))
+				buf.SenderReport(stamp, ntp)
+			}
+			assert.False(t, video.Correct())
+			for _, clock := range hub.Playback("cam").Clocks {
+				assert.Zero(t, clock.Epoch)
+			}
+
+			for _, buf := range []*Buffer{video, audio} {
+				buf.SenderReport(0, ntp+(1<<32))
+				// Old queued timestamps may advance before alignment applies the report.
+				stamp := milliseconds*(buf.clockRate/1000) + buf.clockRate/10
+				buf.Push(packet(2, stamp, idr()...))
+			}
+			for _, clock := range hub.Playback("cam").Clocks {
+				assert.Zero(t, clock.Epoch, "a new report alone must not restart the player on old timestamps")
+			}
+			assert.False(t, video.Correct())
+			for _, buf := range []*Buffer{video, audio} {
+				assert.Empty(t, buf.queue)
+				assert.True(t, buf.catchUp)
+			}
+			clocks := hub.Playback("cam").Clocks
+			require.Len(t, clocks, 2)
+			for _, clock := range clocks {
+				assert.Equal(t, uint64(1), clock.Epoch)
+				assert.Zero(t, clock.Timestamp, "empty buffers must expose the new sender origin")
+				assert.Equal(t, float64(4_000_000_001_000), clock.ReferenceMS)
+			}
+			assert.False(t, video.Correct())
+			assert.Equal(t, clocks, hub.Playback("cam").Clocks, "one reset must change the epoch only once")
+			for _, buf := range []*Buffer{video, audio} {
+				buf.Push(packet(3, buf.clockRate/50, idr()...))
+				buf.SenderReport(0, ntp+(1<<32))
+				buf.SenderReport(buf.clockRate, ntp+(2<<32))
+			}
+			assert.False(t, video.Correct())
+			for _, clock := range hub.Playback("cam").Clocks {
+				assert.Equal(t, uint64(1), clock.Epoch)
+				assert.InDelta(t, 20, clock.ReferenceMS-float64(4_000_000_001_000), 0.01)
+			}
+		})
+	}
+}
+
+func TestSenderResetDetectionIgnoresWrapsAndStaleReports(t *testing.T) {
+	buf := NewBuffer(time.Second, testClock, "video/H264", nil)
+	defer buf.Close()
+	ntp := uint64(4_000_000_000) << 32
+	buf.SenderReport(0xfffffff0, ntp)
+	buf.SenderReport(testClock-16, ntp+(1<<32))
+	assert.False(t, buf.clockReset, "a normal RTP wrap must not reset playback")
+	buf.SenderReport(0, ntp+(1<<32))
+	buf.SenderReport(0, ntp)
+	buf.SenderReport(0, 0)
+	assert.False(t, buf.clockReset, "rejected reports must not change the reset state")
+	buf.SenderReport(0, ntp+(2<<32))
+	assert.True(t, buf.clockReset)
+}

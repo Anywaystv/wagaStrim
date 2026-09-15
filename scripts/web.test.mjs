@@ -151,8 +151,8 @@ test("successful audio playback dismisses only the audio prompt", async () => {
 test("a relay clock correction reconnects the custom player once with fresh references", async () => {
   const script = read("internal/egress/web/player.html").match(/<script>([\s\S]*?)<\/script>/)[1];
   let settings = { dynamicDelay: false, clocks: [
-    { kind: "video", mime: "video/H264", rate: 90000, timestamp: 90000, referenceMs: 1000 },
-    { kind: "audio", mime: "audio/opus", rate: 48000, timestamp: 48000, referenceMs: 1000 },
+    { kind: "video", mime: "video/H264", rate: 90000, timestamp: 90000, referenceMs: 1000, epoch: 0 },
+    { kind: "audio", mime: "audio/opus", rate: 48000, timestamp: 48000, referenceMs: 1000, epoch: 0 },
   ] };
   let closed = 0, attached = 0, removed = 0;
   const timers = [];
@@ -198,6 +198,44 @@ test("a relay clock correction reconnects the custom player once with fresh refe
   assert.equal(runInNewContext("settings.clocks[1].referenceMs", context), settings.clocks[1].referenceMs);
   await timers.shift()();
   assert.equal(closed, 1, "unchanged references must not cause a reconnect loop");
+
+  for (const reports of ["together", "after", "before"]) {
+    for (const clock of settings.clocks) {
+      clock.timestamp += clock.rate * 3600;
+      clock.referenceMs += 3600000;
+    }
+    await timers.shift()();
+    assert.equal(closed, 1, "an hour of normal playback must stay connected");
+    closed = attached = removed = 0;
+    if (reports === "before") {
+      for (const clock of settings.clocks) {
+        clock.timestamp += clock.rate;
+        clock.referenceMs += 3601000;
+      }
+      await timers.shift()();
+      assert.equal(closed, 0, "a new report can still describe old queued timestamps");
+    }
+    for (const clock of settings.clocks) {
+      clock.timestamp -= clock.rate * 3599;
+      clock.referenceMs += reports === "together" ? 1000 : -3599000;
+    }
+    if (reports === "after") {
+      await timers.shift()();
+      assert.equal(closed, 0, "old sender reports cannot distinguish a reset from reordered media");
+      for (const clock of settings.clocks) clock.referenceMs += 3600000;
+    }
+    for (const clock of settings.clocks) clock.epoch++;
+    await timers.shift()();
+    assert.equal(closed, 1, "a shared backward reset must close the stale player");
+    assert.equal(removed, 1);
+    timers.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(attached, 1, "both tracks must reattach with fresh timestamp origins");
+    assert.equal(runInNewContext("active.clocks[0].timestamp", context), settings.clocks[0].timestamp);
+    assert.equal(runInNewContext("active.clocks[1].timestamp", context), settings.clocks[1].timestamp);
+    await timers.shift()();
+    assert.equal(closed, 1, "the shared reset must reconnect only once");
+  }
 });
 
 test("settings polls back off within the shared request budget and keep playback running", async () => {

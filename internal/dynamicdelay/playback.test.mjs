@@ -51,6 +51,33 @@ test("independent relay clock recovery refreshes A/V references without reacting
   assert.equal(clocksChanged(next, next), false, "a fresh player must not reconnect repeatedly");
 });
 
+test("shared backward resets refresh both clocks after an hour of playback", () => {
+  const attached = [90000, 48000].map((rate, index) => ({ kind: index ? "audio" : "video", rate,
+    timestamp: 0xfffffff0, referenceMs: 4e12, epoch: 0 }));
+  const recent = attached.map(clock => ({ ...clock,
+    timestamp: (clock.timestamp + 3600 * clock.rate) >>> 0, referenceMs: clock.referenceMs + 3600000 }));
+  assert.equal(clocksChanged(attached, recent), false);
+  const reset = recent.map((clock, index) => ({ ...clock,
+    timestamp: (attached[index].timestamp + clock.rate) >>> 0, referenceMs: clock.referenceMs + 1000, epoch: 1 }));
+  assert.equal(clocksChanged(attached, reset), true,
+    "equal resets must reconnect even when the new timestamps are ahead of the attachment snapshot");
+  assert.equal(clocksChanged(reset, reset), false);
+  for (const clock of reset) {
+    const timestamp = rtpClock(clock, reset[0].referenceMs);
+    assert.equal(timestamp(clock.timestamp), 0, "the replacement worker must accept the reset media");
+  }
+  const reordered = recent.map(clock => ({ ...clock,
+    timestamp: (clock.timestamp - clock.rate) >>> 0, referenceMs: clock.referenceMs - 1000 }));
+  assert.equal(clocksChanged(attached, reordered), false,
+    "old packets retain their clock mapping and must not look like a sender reset");
+  const shifted = recent.map(clock => ({ ...clock, referenceMs: clock.referenceMs + 3000 }));
+  assert.equal(clocksChanged(attached, shifted), false);
+  const reorderedAfterShift = shifted.map(clock => ({ ...clock,
+    timestamp: (clock.timestamp - clock.rate) >>> 0, referenceMs: clock.referenceMs - 1000 }));
+  assert.equal(clocksChanged(attached, reorderedAfterShift), false,
+    "an accepted common clock correction must not make later reordered packets look like a reset");
+});
+
 test("video worker orders retransmitted frames before decoding and forwards every frame to WebRTC", async t => {
   const decoded = [], decoders = [];
   mockGlobals(t, {

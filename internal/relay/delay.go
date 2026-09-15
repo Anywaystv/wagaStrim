@@ -26,11 +26,13 @@ type Buffer struct {
 	mime      string
 
 	// Mapping from the sender's RTP clock to ours, fixed on the first packet.
-	based     bool
-	baseRTP   uint32
-	baseWall  time.Time
-	senderRTP uint32
-	senderNTP uint64
+	based      bool
+	baseRTP    uint32
+	baseWall   time.Time
+	senderRTP  uint32
+	senderNTP  uint64
+	clockReset bool
+	clockEpoch uint64
 
 	// catchUp drops video until a keyframe can resume playback after correction.
 	catchUp  bool

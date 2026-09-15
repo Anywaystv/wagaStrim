@@ -19,6 +19,9 @@ func (b *Buffer) SenderReport(timestamp uint32, ntp uint64) {
 	if ntp == 0 || (b.senderNTP != 0 && (delta == 0 || delta > math.MaxInt64)) {
 		return
 	}
+	if b.senderNTP != 0 && rtpDelta(timestamp, b.senderRTP) < 0 {
+		b.clockReset = true
+	}
 	b.senderRTP, b.senderNTP = timestamp, ntp
 }
 
@@ -54,28 +57,36 @@ func (r *Relay) Playback(ingestID string) dynamicdelay.Playback {
 			playback.CurrentDelayMS = float64(buf.target) / float64(time.Millisecond)
 		}
 		if buf.based {
-			stamp := buf.baseRTP
-			if len(buf.queue) > 0 {
-				stamp = buf.queue[0].pkt.Timestamp
-			}
-			kind, _, _ := strings.Cut(buf.mime, "/")
-			var referenceMS float64
-			if senderClocks {
-				// Both reports use the publisher's NTP epoch, even if their network
-				// arrivals differ. Do not mix that epoch with arrival-based fallback.
-				referenceMS = buf.senderTimeMS(stamp)
-			} else {
-				// Normalize jumps that one track has applied before the other.
-				reference := buf.playoutOf(stamp).Add(-buf.target - buf.shift)
-				referenceMS = float64(reference.UnixMicro()) / float64(time.Millisecond/time.Microsecond)
-			}
-			playback.Clocks = append(playback.Clocks, dynamicdelay.Clock{
-				Kind: strings.ToLower(kind), MIME: buf.mime, Rate: buf.clockRate, Timestamp: stamp,
-				ReferenceMS: referenceMS,
-			})
+			playback.Clocks = append(playback.Clocks, buf.playbackClockLocked(senderClocks))
 		}
 		buf.mu.Unlock()
 	}
 
 	return playback
+}
+
+func (b *Buffer) playbackClockLocked(senderClocks bool) dynamicdelay.Clock {
+	stamp := b.baseRTP
+	if senderClocks {
+		stamp = b.senderRTP
+	}
+	if len(b.queue) > 0 {
+		stamp = b.queue[0].pkt.Timestamp
+	}
+	kind, _, _ := strings.Cut(b.mime, "/")
+	var referenceMS float64
+	if senderClocks {
+		// Both reports use the publisher's NTP epoch, even if their network
+		// arrivals differ. Do not mix that epoch with arrival-based fallback.
+		referenceMS = b.senderTimeMS(stamp)
+	} else {
+		// Normalize jumps that one track has applied before the other.
+		reference := b.playoutOf(stamp).Add(-b.target - b.shift)
+		referenceMS = float64(reference.UnixMicro()) / float64(time.Millisecond/time.Microsecond)
+	}
+
+	return dynamicdelay.Clock{
+		Kind: strings.ToLower(kind), MIME: b.mime, Rate: b.clockRate, Timestamp: stamp,
+		ReferenceMS: referenceMS, Epoch: b.clockEpoch,
+	}
 }

@@ -60,15 +60,24 @@ func (s *Stream) alignSenderClocksLocked() bool {
 	}
 	for _, buf := range s.buffers {
 		delta := time.Duration((buf.senderTimeMS(buf.baseRTP) - s.senderBaseMS) * float64(time.Millisecond))
-		shift := s.senderBaseWall.Add(delta + buf.shift).Sub(buf.baseWall)
-		if shift.Abs() <= 50*time.Millisecond {
-			continue
-		}
-		// A timestamp reset invalidates queued media from the old mapping.
-		buf.moveClockLocked(shift, established && shift.Abs() > correctionMargin(buf.target))
+		buf.alignSenderClockLocked(s.senderBaseWall.Add(delta+buf.shift), established)
 	}
 
 	return true
+}
+
+func (b *Buffer) alignSenderClockLocked(base time.Time, established bool) {
+	shift := base.Sub(b.baseWall)
+	if shift.Abs() <= 50*time.Millisecond && !b.clockReset {
+		return
+	}
+	// A timestamp reset invalidates queued media from the old mapping.
+	b.moveClockLocked(shift, b.clockReset || (established && shift.Abs() > correctionMargin(b.target)))
+	if b.clockReset {
+		// Publish the new epoch only after old queued timestamps are gone.
+		b.clockEpoch++
+		b.clockReset = false
+	}
 }
 
 func (b *Buffer) moveClockLocked(shift time.Duration, reset bool) {

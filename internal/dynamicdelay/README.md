@@ -45,7 +45,7 @@ Unsupported browsers and codecs use standard playback, which may stutter at high
 The player orders and deduplicates incoming video within its existing buffer.
 A decoding error resumes at the next keyframe; three failures without a decoded
 frame fall back to standard playback.
-If relay recovery changes the audio/video clock offset, the player reconnects
+If relay recovery changes the audio/video clock offset or resets their timestamps, the player reconnects
 to pick up fresh clock references instead of freezing the picture.
 Once both sender reports arrive, the relay schedules audio and video on that
 same timeline. Small clock corrections preserve queued media; a large timestamp
