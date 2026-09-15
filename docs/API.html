@@ -123,6 +123,40 @@ there is no conflict detection.</p>
 <code>syncGroup</code>. Keys must be unique and cryptographically random.
 Strip the read-only <code>links</code> field from GET results before PUT.
 Missing cameras and changed keys/codecs disconnect sessions; 204 means saved.</p>
+<p>Dynamic delay is optional and off by default. These per-camera settings are saved
+and apply live. The built-in player reconnects when this mode is turned on or off:</p>
+<ul>
+  <li><code>dynamicDelay</code>: set to <code>true</code> to enable.</li>
+  <li><code>maxDelayMs</code>: maximum buffer target, from 1 to 10000 ms and at least <code>delayMs</code>.</li>
+  <li><code>autoCatchUp</code>: automatic catch-up speed, enabled when omitted. Set to <code>false</code> for manual speed.</li>
+  <li><code>catchUpMsPerSecond</code>: manual catch-up limit, from 1 to 200 ms of delay removed per second. Omitted or zero defaults to 10. Saved but unused while automatic speed is on.</li>
+  <li><code>jumpAtMaximum</code>: allow a keyframe skip when the required delay exceeds the maximum.</li>
+</ul>
+<p>An omitted or zero <code>maxDelayMs</code> defaults to 10000 with jumping enabled.
+To disable jumps, send a positive maximum and <code>jumpAtMaximum: false</code>.</p>
+<p>Audio and video adjust together. The buffer grows by up to 50 ms per second for
+late packets, then catches up toward <code>delayMs</code> after five quiet seconds.
+The built-in player uses a shared audio/video playback clock for H.264, H.265 or AV1 with Opus,
+with speed up to 1.2x and audio pitch correction. Automatic speed increases from 1.01x
+to 1.2x across 90% of the space between normal and maximum delay, then eases back as
+the backlog drains. It needs WebCodecs, MediaSource and WebRTC
+encoded transforms, available in compatible browsers on localhost or HTTPS.
+Other codecs and unsupported browsers use standard playback with a visible notice.
+Other WHEP receivers control their own playback speed and may stutter during catch-up.
+A jump skips part of the stream and needs a
+keyframe from the sender. Without jumping, buffering stops growing at the maximum;
+packets may still arrive late. Sync groups keep their fixed delay. The player may
+add more delay, so these settings do not cap total playback latency.</p>
+<p><code>GET /player/{receiverKey}/playback</code> returns the effective dynamic-delay
+settings, normal <code>delayMs</code>, current relay <code>currentDelayMs</code>, and
+recent RTP clock references for that camera. Each clock includes an <code>epoch</code>
+that changes after a backward sender timestamp reset has been applied; players
+restart their media timelines when it changes. It requires the receiver
+key and contains no stream keys. The built-in player normally refreshes it about once per second;
+after rate limiting, it keeps a slower interval for that page session and respects
+<code>Retry-After</code>. Playback continues with the last settings while waiting.
+Speed, maximum and jump changes apply without reconnecting. Its local playback
+buffer normally holds about half a second in addition to the relay delay.</p>
 </details>
 
 <h2>Errors</h2>

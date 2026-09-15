@@ -388,7 +388,10 @@ func (s *Server) clearPrevious(ing config.Ingest) error {
 
 // drain forwards the track into the relay and counts bytes. Packets are passed
 // through untouched: no depacketising, no re-encoding, no timestamp rewriting.
-func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerConnection, track *webrtc.TrackRemote) {
+func (s *Server) drain(
+	ing config.Ingest, session *Session, peer *webrtc.PeerConnection,
+	track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver,
+) {
 	s.log.Infof("ingest %s: track %s %s", ing.Label, track.Kind(), track.Codec().MimeType)
 	s.mu.Lock()
 	if !s.currentLocked(session) {
@@ -416,6 +419,8 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 		return
 	}
 
+	s.relay.ConfigureDelay(ing.ID, time.Duration(s.cfg.EffectiveDelay(ing.ID))*time.Millisecond,
+		s.cfg.DelayOptions(ing.ID))
 	buf := relay.NewBuffer(
 		time.Duration(s.cfg.EffectiveDelay(ing.ID))*time.Millisecond,
 		track.Codec().ClockRate,
@@ -427,6 +432,7 @@ func (s *Server) drain(ing config.Ingest, session *Session, peer *webrtc.PeerCon
 	s.relay.Track(ing.ID, buf)
 	s.mu.Unlock()
 	defer s.relay.Untrack(ing.ID, buf)
+	go drainRTCP(receiver, track.SSRC(), buf)
 
 	go relay.Feed(out, buf, func(err error) { s.log.Warnf("ingest %s: forward: %v", ing.Label, err) })
 
@@ -463,13 +469,17 @@ func (s *Server) requestKeyframe(ing config.Ingest, peer *webrtc.PeerConnection,
 }
 
 // drainRTCP drives the report interceptor so Sender Reports contribute to
-// Receiver Reports and the publisher can measure RTT.
-func drainRTCP(receiver *webrtc.RTPReceiver) {
-	buf := make([]byte, 1500)
-
+// Receiver Reports, and retains their clock mapping for synchronized playback.
+func drainRTCP(receiver *webrtc.RTPReceiver, ssrc webrtc.SSRC, buf *relay.Buffer) {
 	for {
-		if _, _, err := receiver.Read(buf); err != nil {
+		packets, _, err := receiver.ReadRTCP()
+		if err != nil {
 			return
+		}
+		for _, packet := range packets {
+			if report, ok := packet.(*rtcp.SenderReport); ok && report.SSRC == uint32(ssrc) {
+				buf.SenderReport(report.RTPTime, report.NTPTime)
+			}
 		}
 	}
 }
@@ -477,9 +487,7 @@ func drainRTCP(receiver *webrtc.RTPReceiver) {
 // watch wires the callbacks that track a publisher's life.
 func (s *Server) watch(ing config.Ingest, session *Session, peer *webrtc.PeerConnection) {
 	peer.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
-		go drainRTCP(receiver)
-
-		s.drain(ing, session, peer, track)
+		s.drain(ing, session, peer, track, receiver)
 	})
 
 	s.watchPath(ing, session, peer)

@@ -41,7 +41,8 @@ type Server struct {
 
 	// revoke closes the live sessions of a camera whose keys moved, which is the
 	// same teardown deleting one from the settings page performs.
-	revoke func(ingestID string)
+	revoke   func(ingestID string)
+	retarget func(string, int)
 }
 
 // New wires the routes. Binding happens in Serve, so a caller can decide not to.
@@ -50,6 +51,7 @@ func New(
 	log logging.LeveledLogger,
 	counters *stats.Registry,
 	revoke func(string),
+	retarget func(string, int),
 ) *Server {
 	srv := &Server{
 		cfg:      cfg,
@@ -57,6 +59,7 @@ func New(
 		counters: counters,
 		listen:   net.JoinHostPort(cfg.ControlBind, fmt.Sprint(cfg.ControlPort)),
 		revoke:   revoke,
+		retarget: retarget,
 	}
 
 	mux := http.NewServeMux()
@@ -142,6 +145,11 @@ func (s *Server) handleIngests(wri http.ResponseWriter, req *http.Request) {
 
 	for _, id := range stale {
 		s.revoke(id)
+	}
+	if s.retarget != nil {
+		for _, camera := range s.cfg.List() {
+			s.retarget(camera.ID, s.cfg.EffectiveDelay(camera.ID))
+		}
 	}
 
 	s.log.Infof("control set %d cameras, dropping %d live session(s)", len(body.Ingests), len(stale))

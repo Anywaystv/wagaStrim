@@ -139,7 +139,7 @@ func testServer(t *testing.T) (*Server, *config.Config, *[]string) {
 	revoked := &[]string{}
 
 	srv := New(cfg, logging.NewDefaultLoggerFactory().NewLogger("test"), stats.New(),
-		func(id string) { *revoked = append(*revoked, id) })
+		func(id string) { *revoked = append(*revoked, id) }, nil)
 
 	return srv, cfg, revoked
 }
@@ -185,6 +185,27 @@ func TestASuppliedListIsApplied(t *testing.T) {
 	require.Len(t, stored, 1)
 	assert.Equal(t, "cam1", stored[0].ID)
 	assert.Equal(t, 300, stored[0].DelayMS, "a deployment floor of its own is honored")
+}
+
+func TestDynamicDelayAppliesLiveWithoutRevokingTheCamera(t *testing.T) {
+	srv, cfg, revoked := testServer(t)
+	require.Equal(t, http.StatusNoContent, put(t, srv, token, list("a")).Code)
+	var applied []string
+	srv.retarget = func(id string, delayMS int) {
+		applied = append(applied, id)
+		assert.Equal(t, 300, delayMS)
+		assert.True(t, cfg.DelayOptions(id).Enabled)
+		assert.Equal(t, 200, cfg.DelayOptions(id).CatchUpMSPerSecond)
+		assert.False(t, cfg.DelayOptions(id).Automatic())
+	}
+	body := strings.Replace(list("a"), `"delayMs":300`,
+		`"delayMs":300,"dynamicDelay":true,"maxDelayMs":4500,"jumpAtMaximum":false,`+
+			`"catchUpMsPerSecond":200,"autoCatchUp":false`, 1)
+	require.Equal(t, http.StatusNoContent, put(t, srv, token, body).Code)
+	assert.Equal(t, []string{"cam1"}, applied)
+	assert.Empty(t, *revoked)
+	assert.Equal(t, 4500, cfg.List()[0].MaximumMS)
+	assert.False(t, cfg.List()[0].Jump)
 }
 
 func TestASessionWhoseKeysMovedIsDropped(t *testing.T) {

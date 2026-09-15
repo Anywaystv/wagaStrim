@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Anywaystv/wagaStrim/internal/dynamicdelay"
 	"github.com/pion/rtp"
 )
 
@@ -25,11 +26,15 @@ type Buffer struct {
 	mime      string
 
 	// Mapping from the sender's RTP clock to ours, fixed on the first packet.
-	based    bool
-	baseRTP  uint32
-	baseWall time.Time
+	based      bool
+	baseRTP    uint32
+	baseWall   time.Time
+	senderRTP  uint32
+	senderNTP  uint64
+	clockReset bool
+	clockEpoch uint64
 
-	// catchUp drops video until a keyframe allows the playout clock to reset.
+	// catchUp drops video until a keyframe can resume playback after correction.
 	catchUp  bool
 	keyframe func()
 
@@ -45,6 +50,13 @@ type Buffer struct {
 
 	late    uint64
 	dropped uint64
+
+	dynamic    *dynamicdelay.Controller
+	stream     *Stream
+	recoveryAt time.Time
+	shift      time.Duration
+	cutoff     time.Time
+	peakLate   time.Duration
 }
 
 // Allow recovery bursts without triggering a skip, but scale the margin down
@@ -56,9 +68,6 @@ const (
 
 // maxPaceLag limits pacing debt to one 30fps frame; later packets bypass pacing.
 const maxPaceLag = 33 * time.Millisecond
-
-// resetCeiling drops the queue immediately rather than waiting for a keyframe.
-const resetCeiling = 10 * time.Second
 
 // correctionMargin is how far past its target a buffer may drift before it
 // skips. It follows the target rather than being a constant, because what counts
@@ -90,32 +99,42 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 	}
 
 	if !b.based {
+		// Consume earlier jumps before anchoring a newly arrived track.
+		b.dynamicOffsetLocked(time.Now())
 		b.baseRTP = pkt.Timestamp
 		b.baseWall = time.Now()
 		b.based = true
 	}
 
-	playAt := b.playoutOf(pkt.Timestamp)
-
-	// Past its slot already. Queue it anyway: a late packet still beats a hole,
-	// and the count is what tells the UI the target is too low for this link.
-	if playAt.Before(time.Now()) {
-		b.late++
-	}
-
-	if b.catchUp && !isKeyframe(b.mime, pkt.Payload) {
+	now := time.Now()
+	playAt, offset, stale := b.dynamicArrivalLocked(pkt, now)
+	if stale {
 		b.dropped++
 
 		return
 	}
 
+	// Past its slot already. Queue it anyway: a late packet still beats a hole,
+	// and the count is what tells the UI the target is too low for this link.
+	if late := now.Sub(playAt.Add(offset)); late > 0 {
+		b.late++
+		b.peakLate = max(b.peakLate, late)
+	}
+
 	if b.catchUp {
-		// Rebase the clock too, or the replacement keyframe retains the old drift.
+		if !isKeyframe(b.mime, pkt.Payload) {
+			b.dropped++
+
+			return
+		}
 		b.catchUp = false
 		b.dropAllLocked()
+	}
+	// Keep the anchor recent so a long stream cannot exceed the signed RTP
+	// delta range. Queued packets retain exactly the same playout times.
+	if rtpDelta(pkt.Timestamp, b.baseRTP) > int64(b.clockRate)*60 {
+		b.baseWall = playAt.Add(-b.target)
 		b.baseRTP = pkt.Timestamp
-		b.baseWall = time.Now()
-		playAt = b.playoutOf(pkt.Timestamp)
 	}
 
 	// Wake the reader only when its next deadline changes.
@@ -124,6 +143,28 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 	if b.queue.push(buffered{pkt: pkt, playAt: playAt, order: b.arrived}) {
 		b.ready.Signal()
 	}
+}
+
+func (b *Buffer) dynamicArrivalLocked(pkt *rtp.Packet, now time.Time) (time.Time, time.Duration, bool) {
+	offset := b.dynamicOffsetLocked(now)
+	playAt := b.playoutOf(pkt.Timestamp)
+	if playAt.Add(-b.target).Before(b.cutoff) {
+		return playAt, offset, true
+	}
+	if b.dynamic == nil {
+		return playAt, offset, false
+	}
+	state := b.dynamic.State()
+	if state == nil {
+		return playAt, offset, false
+	}
+	if state.Pending && b.keyframe != nil && isKeyframe(b.mime, pkt.Payload) {
+		b.dynamic.Jump(now, playAt.Add(-b.target))
+		offset = b.dynamicOffsetLocked(now)
+		playAt = b.playoutOf(pkt.Timestamp)
+	}
+
+	return playAt, offset, false
 }
 
 // playoutOf maps a sender timestamp onto our clock.
@@ -165,8 +206,12 @@ func (b *Buffer) Pop() (*rtp.Packet, bool) {
 		}
 
 		now := time.Now()
+		offset := b.dynamicOffsetLocked(now)
+		if len(b.queue) == 0 {
+			continue
+		}
 
-		wait := b.queue[0].playAt.Sub(now)
+		wait := b.queue[0].playAt.Add(offset).Sub(now)
 		if wait <= 0 {
 			if hold := b.paceHoldLocked(now); hold > 0 {
 				b.waitUntilLocked(hold)
@@ -217,38 +262,15 @@ func (b *Buffer) depthLocked() time.Duration {
 	return max(0, time.Until(newest))
 }
 
-// Correct requests a keyframe to recover from excess depth and reports whether
-// correction started. Beyond resetCeiling it also discards queued packets.
+// Correct discards excess depth across registered tracks and requests a keyframe.
+// It reports whether a new clock correction started.
 func (b *Buffer) Correct() bool {
-	b.mu.Lock()
-
-	depth := b.depthLocked()
-	started := false
-
-	switch {
-	case depth > resetCeiling:
-		b.dropAllLocked()
-		b.catchUp = true
-		started = true
-	case b.catchUp:
-		// Retry the keyframe request: the previous PLI may have been lost.
-	case depth <= b.target+correctionMargin(b.target):
-		b.mu.Unlock()
-
+	if b.stream == nil {
 		return false
-	default:
-		b.catchUp = true
-		started = true
 	}
+	b.stream.adjustDelay(time.Now())
 
-	ask := b.keyframe
-	b.mu.Unlock()
-
-	if ask != nil {
-		ask()
-	}
-
-	return started
+	return b.stream.correctClocks()
 }
 
 // paceHoldLocked returns the pacing wait, or zero to send now. Packets sharing
@@ -263,7 +285,13 @@ func (b *Buffer) paceHoldLocked(now time.Time) time.Duration {
 	// Already a frame late: the link is behind and holding anything back only
 	// deepens it. Clearing the slot matters as much as returning zero, or the
 	// burst that follows a stall pays for a queue it never built.
-	if now.Sub(head.playAt) > b.lateAllowanceLocked() {
+	offset := time.Duration(0)
+	if b.dynamic != nil {
+		if state := b.dynamic.State(); state != nil {
+			offset = state.Delay(now) - b.target
+		}
+	}
+	if now.Sub(head.playAt.Add(offset)) > b.lateAllowanceLocked() {
 		b.nextSlot = now
 
 		return 0
@@ -365,6 +393,28 @@ func (b *Buffer) SetTarget(target time.Duration) {
 	}
 
 	b.ready.Signal()
+}
+
+// dynamicOffsetLocked applies a shared jump once, then reads the gradual curve.
+func (b *Buffer) dynamicOffsetLocked(now time.Time) time.Duration {
+	if b.dynamic == nil {
+		return 0
+	}
+	state := b.dynamic.State()
+	if state == nil {
+		return 0
+	}
+	if !state.Cutoff.Equal(b.cutoff) {
+		b.baseWall = b.baseWall.Add(state.Shift - b.shift)
+		b.shift = state.Shift
+		b.cutoff = state.Cutoff
+		b.dropAllLocked()
+		b.group = time.Time{}
+		b.catchUp = false
+		b.peakLate = 0
+	}
+
+	return state.Delay(now) - b.target
 }
 
 // Close releases any blocked reader once the queue is drained.
