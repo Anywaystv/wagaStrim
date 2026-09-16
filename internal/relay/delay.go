@@ -158,17 +158,12 @@ func (b *Buffer) dynamicArrivalLocked(pkt *rtp.Packet, now time.Time) (time.Time
 	if playAt.Add(-b.target).Before(b.cutoff) || b.staleResetPacketLocked(pkt.SequenceNumber, playAt, now) {
 		return playAt, offset, true
 	}
-	if b.dynamic == nil {
-		return playAt, offset, false
-	}
-	state := b.dynamic.State()
-	if state == nil {
-		return playAt, offset, false
-	}
-	if state.Pending && b.keyframe != nil && isKeyframe(b.mime, pkt.Payload) {
-		b.dynamic.Jump(now, playAt.Add(-b.target))
-		offset = b.dynamicOffsetLocked(now)
-		playAt = b.playoutOf(pkt.Timestamp)
+	if b.dynamic != nil && b.keyframe != nil {
+		if state := b.dynamic.State(); state != nil && state.Pending && isKeyframe(b.mime, pkt.Payload) {
+			b.dynamic.Jump(now, playAt.Add(-b.target))
+			offset = b.dynamicOffsetLocked(now)
+			playAt = b.playoutOf(pkt.Timestamp)
+		}
 	}
 
 	return playAt, offset, false
@@ -220,7 +215,7 @@ func (b *Buffer) Pop() (*rtp.Packet, bool) {
 
 		wait := b.queue[0].playAt.Add(offset).Sub(now)
 		if wait <= 0 {
-			if hold := b.paceHoldLocked(now); hold > 0 {
+			if hold := b.paceHoldLocked(now, -wait); hold > 0 {
 				b.waitUntilLocked(hold)
 
 				continue
@@ -282,7 +277,7 @@ func (b *Buffer) Correct() bool {
 
 // paceHoldLocked returns the pacing wait, or zero to send now. Packets sharing
 // a playout time reuse the spacing calculated for the first packet.
-func (b *Buffer) paceHoldLocked(now time.Time) time.Duration {
+func (b *Buffer) paceHoldLocked(now time.Time, late time.Duration) time.Duration {
 	head := b.queue[0]
 
 	if !head.playAt.Equal(b.group) {
@@ -292,13 +287,7 @@ func (b *Buffer) paceHoldLocked(now time.Time) time.Duration {
 	// Already a frame late: the link is behind and holding anything back only
 	// deepens it. Clearing the slot matters as much as returning zero, or the
 	// burst that follows a stall pays for a queue it never built.
-	offset := time.Duration(0)
-	if b.dynamic != nil {
-		if state := b.dynamic.State(); state != nil {
-			offset = state.Delay(now) - b.target
-		}
-	}
-	if now.Sub(head.playAt.Add(offset)) > b.lateAllowanceLocked() {
+	if late > b.lateAllowanceLocked() {
 		b.nextSlot = now
 
 		return 0

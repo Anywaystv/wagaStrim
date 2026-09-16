@@ -439,7 +439,7 @@ function receive({ readable, writable, options }) {
         // A failed decoder cannot be reset. Resume with a fresh keyframe.
         for (const chunk of chunks.splice(0, key)) compressed -= chunk.byteLength;
         decoder = createDecoder();
-        decoder.configure({ codec: config, optimizeForLatency: true });
+        decoder.configure(config);
       }
       if (decoder.state !== "configured") return;
       if (chunks.length && chunks[0].timestamp < (horizon - 1) * 1e6) {
@@ -447,7 +447,7 @@ function receive({ readable, writable, options }) {
         if (key > 0) {
           for (const chunk of chunks.splice(0, key)) compressed -= chunk.byteLength;
           decoder.reset();
-          decoder.configure({ codec: config, optimizeForLatency: true });
+          decoder.configure(config);
         }
       }
       // Reserve 200 ms of the existing player buffer for reordered frames.
@@ -467,9 +467,10 @@ function receive({ readable, writable, options }) {
       if (raw.length > 8 * 1024 * 1024) throw new Error("Encoded frame too large");
       if (kind === "video") {
         if (!config && frame.type === "key") {
-          config = videoCodec(raw, clock.mime);
-          if (!config) throw new Error("Video keyframe has no sequence header");
-          decoder.configure({ codec: config, optimizeForLatency: true });
+          const codec = videoCodec(raw, clock.mime);
+          if (!codec) throw new Error("Video keyframe has no sequence header");
+          config = { codec, optimizeForLatency: true };
+          decoder.configure(config);
         }
         if (config && time >= 0) {
           const chunk = new EncodedVideoChunk({ type: frame.type, timestamp: Math.round(time * 1e6 / rate), data: raw });

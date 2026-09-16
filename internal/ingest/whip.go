@@ -419,14 +419,9 @@ func (s *Server) drain(
 		return
 	}
 
-	s.relay.ConfigureDelay(ing.ID, time.Duration(s.cfg.EffectiveDelay(ing.ID))*time.Millisecond,
-		s.cfg.DelayOptions(ing.ID))
-	buf := relay.NewBuffer(
-		time.Duration(s.cfg.EffectiveDelay(ing.ID))*time.Millisecond,
-		track.Codec().ClockRate,
-		track.Codec().MimeType,
-		askKeyframe,
-	)
+	target := time.Duration(s.cfg.EffectiveDelay(ing.ID)) * time.Millisecond
+	s.relay.ConfigureDelay(ing.ID, target, s.cfg.DelayOptions(ing.ID))
+	buf := relay.NewBuffer(target, track.Codec().ClockRate, track.Codec().MimeType, askKeyframe)
 	defer buf.Close()
 
 	s.relay.Track(ing.ID, buf)

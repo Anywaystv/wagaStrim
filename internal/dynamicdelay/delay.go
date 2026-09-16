@@ -114,15 +114,11 @@ func (c *Controller) Configure(base time.Duration, options Options, now time.Tim
 	if state == nil && !options.Enabled {
 		return
 	}
-	next := State{Start: now, From: base, To: base, Shift: c.shift, Cutoff: c.cutoff}
-	if state != nil {
-		next.From, next.To = state.Delay(now), state.Delay(now)
-		next.Shift, next.Cutoff = state.Shift, state.Cutoff
+	current := base
+	if state != nil && options.Enabled {
+		current = state.Delay(now)
 	}
-	if !options.Enabled {
-		next.From, next.To = base, base
-	}
-	c.state.Store(&next)
+	c.state.Store(&State{Start: now, From: current, To: current, Shift: c.shift, Cutoff: c.cutoff})
 }
 
 // Step reacts to the worst late arrival across both tracks. Growth is limited
@@ -137,16 +133,16 @@ func (c *Controller) Step(now time.Time, late time.Duration) *State {
 		return state
 	}
 	c.lastStep = now
-	current := state.Delay(now)
-	if !c.options.Enabled && current == c.base {
+	if !c.options.Enabled {
 		c.state.Store(nil)
 
 		return nil
 	}
+	current := state.Delay(now)
 	next := *state
 	next.Start, next.From = now, current
 	exceeded := c.updateGoal(now, current, late)
-	next.Pending = state.Pending || (c.options.Enabled && c.options.Jump && exceeded)
+	next.Pending = state.Pending || (c.options.Jump && exceeded)
 	catchUp := c.options.CatchUp(current, c.base)
 	next.To = max(current-catchUp, min(current+50*time.Millisecond, c.goal))
 	c.state.Store(&next)
@@ -157,11 +153,11 @@ func (c *Controller) Step(now time.Time, late time.Duration) *State {
 func (c *Controller) updateGoal(now time.Time, current, late time.Duration) bool {
 	maximum := time.Duration(c.options.MaximumMS) * time.Millisecond
 	wanted := current
-	if c.options.Enabled && late > 0 {
+	if late > 0 {
 		wanted += late + 100*time.Millisecond
 		c.goal = max(c.goal, min(maximum, wanted))
 		c.quietUntil = now.Add(5 * time.Second)
-	} else if !c.options.Enabled || now.After(c.quietUntil) {
+	} else if now.After(c.quietUntil) {
 		c.goal = c.base
 	}
 

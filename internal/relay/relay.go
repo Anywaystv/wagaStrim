@@ -167,6 +167,28 @@ func (r *Relay) Track(ingestID string, buf *Buffer) {
 	}
 }
 
+// Untrack releases ended buffers so reconnects do not grow the retarget list.
+func (r *Relay) Untrack(ingestID string, buf *Buffer) {
+	r.mu.RLock()
+	stream, ok := r.streams[ingestID]
+	r.mu.RUnlock()
+
+	if !ok {
+		return
+	}
+
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+
+	for idx, held := range stream.buffers {
+		if held == buf {
+			stream.buffers = slices.Delete(stream.buffers, idx, idx+1)
+
+			return
+		}
+	}
+}
+
 func (s *Stream) adjustDelay(now time.Time) {
 	if s.delay.State() == nil {
 		return
@@ -227,28 +249,6 @@ func (r *Relay) ConfigureDelay(ingestID string, target time.Duration, options dy
 		}
 		buf.ready.Signal()
 		buf.mu.Unlock()
-	}
-}
-
-// Untrack releases ended buffers so reconnects do not grow the retarget list.
-func (r *Relay) Untrack(ingestID string, buf *Buffer) {
-	r.mu.RLock()
-	stream, ok := r.streams[ingestID]
-	r.mu.RUnlock()
-
-	if !ok {
-		return
-	}
-
-	stream.mu.Lock()
-	defer stream.mu.Unlock()
-
-	for idx, held := range stream.buffers {
-		if held == buf {
-			stream.buffers = slices.Delete(stream.buffers, idx, idx+1)
-
-			return
-		}
 	}
 }
 
