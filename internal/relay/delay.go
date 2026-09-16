@@ -34,6 +34,9 @@ type Buffer struct {
 	clockReset bool
 	clockEpoch uint64
 
+	resetPending  bool
+	resetSequence uint16
+
 	// catchUp drops video until a keyframe can resume playback after correction.
 	catchUp  bool
 	keyframe func()
@@ -130,6 +133,10 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 		b.catchUp = false
 		b.dropAllLocked()
 	}
+	if b.resetPending {
+		b.resetPending = false
+		b.resetSequence = pkt.SequenceNumber
+	}
 	// Keep the anchor recent so a long stream cannot exceed the signed RTP
 	// delta range. Queued packets retain exactly the same playout times.
 	if rtpDelta(pkt.Timestamp, b.baseRTP) > int64(b.clockRate)*60 {
@@ -148,7 +155,7 @@ func (b *Buffer) Push(pkt *rtp.Packet) {
 func (b *Buffer) dynamicArrivalLocked(pkt *rtp.Packet, now time.Time) (time.Time, time.Duration, bool) {
 	offset := b.dynamicOffsetLocked(now)
 	playAt := b.playoutOf(pkt.Timestamp)
-	if playAt.Add(-b.target).Before(b.cutoff) {
+	if playAt.Add(-b.target).Before(b.cutoff) || b.staleResetPacketLocked(pkt.SequenceNumber, playAt, now) {
 		return playAt, offset, true
 	}
 	if b.dynamic == nil {

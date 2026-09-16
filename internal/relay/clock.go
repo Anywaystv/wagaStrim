@@ -77,7 +77,23 @@ func (b *Buffer) alignSenderClockLocked(base time.Time, established bool) {
 		// Publish the new epoch only after old queued timestamps are gone.
 		b.clockEpoch++
 		b.clockReset = false
+		b.resetPending = true
 	}
+}
+
+func (b *Buffer) staleResetPacketLocked(sequence uint16, playAt, now time.Time) bool {
+	if b.clockEpoch == 0 {
+		return false
+	}
+	if b.resetPending || sequence-b.resetSequence >= 0x8000 {
+		// Old timestamps can look hours ahead under the new sender report.
+		// Keep reordered packets, including keyframe parameters, when their
+		// timestamps still fit the new clock.
+		return playAt.Sub(now) > b.target+correctionMargin(b.target)
+	}
+	b.resetSequence = sequence
+
+	return false
 }
 
 func (b *Buffer) moveClockLocked(shift time.Duration, reset bool) {
