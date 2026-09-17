@@ -104,15 +104,16 @@ func (b *Buffer) alignSenderClockLocked(base time.Time, established bool) {
 	}
 }
 
-func (b *Buffer) staleResetPacketLocked(sequence uint16, playAt, now time.Time) bool {
+func (b *Buffer) staleResetPacketLocked(sequence uint16, playAt, now time.Time, offset time.Duration) bool {
 	if b.clockEpoch == 0 {
 		return false
 	}
 	if b.resetPending || sequence-b.resetSequence >= 0x8000 {
-		// Old timestamps can look hours ahead under the new sender report.
-		// Keep reordered packets, including keyframe parameters, when their
-		// timestamps still fit the new clock.
-		return playAt.Sub(now) > b.target+correctionMargin(b.target)
+		// Old timestamps can land on either side of the new clock. A late first
+		// keyframe must still establish the sequence and drive outage recovery.
+		margin := correctionMargin(b.target)
+
+		return playAt.Sub(now) > b.target+margin || (!b.resetPending && now.Sub(playAt.Add(offset)) > margin)
 	}
 	b.resetSequence = sequence
 

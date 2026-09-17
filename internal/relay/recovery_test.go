@@ -164,3 +164,33 @@ func TestSenderCorrectionsStayWithTheirTracks(t *testing.T) {
 	video.Correct()
 	assert.WithinDuration(t, afterVideo, video.stream.senderBaseWall, 20*time.Millisecond)
 }
+
+func TestForwardResetRejectsOldRetransmissions(t *testing.T) {
+	for _, seconds := range []uint32{10, 20, 3600} {
+		t.Run((time.Duration(seconds) * time.Second).String(), func(t *testing.T) {
+			video, audio, ntp := anchoredBuffers(t)
+			hub := video.stream
+			hub.delay.Configure(2*time.Second, dynamicdelay.Options{Enabled: true}, time.Now())
+			for _, buf := range []*Buffer{video, audio} {
+				buf.dynamic = &hub.delay
+				buf.Push(packet(10, seconds*buf.clockRate, idr()...))
+			}
+			require.True(t, video.Correct())
+			for _, buf := range []*Buffer{video, audio} {
+				buf.SenderReport(seconds*buf.clockRate, ntp+(1<<32))
+			}
+			video.Correct()
+			for _, buf := range []*Buffer{video, audio} {
+				buf.Push(packet(11, seconds*buf.clockRate+buf.clockRate/50, idr()...))
+			}
+			before := video.playoutOf(seconds * video.clockRate)
+			video.Push(packet(2, 0, interFrame()...))
+			state := hub.delay.Step(time.Now().Add(time.Second), video.peakLate)
+			assert.False(t, state.Pending, "old media must not request another jump")
+			video.Push(packet(3, video.clockRate/50, idr()...))
+			require.Len(t, video.queue, 1)
+			assert.Equal(t, uint16(11), video.queue[0].pkt.SequenceNumber)
+			assert.Equal(t, before, video.playoutOf(seconds*video.clockRate))
+		})
+	}
+}

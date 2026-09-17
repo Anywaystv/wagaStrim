@@ -112,3 +112,64 @@ func TestResetKeepsReorderedKeyframeParameters(t *testing.T) {
 	video.Push(packet(65533, 0, 8))
 	assert.Len(t, video.queue, 3, "parameter sets preceding the IDR still belong to its new timestamp epoch")
 }
+
+func TestSenderResetBetweenReports(t *testing.T) {
+	for _, seconds := range []uint32{5, 10, 3600} {
+		t.Run((time.Duration(seconds) * time.Second).String(), func(t *testing.T) {
+			hub, _ := livePublisher(t)
+			base := time.Now().Add(-time.Duration(seconds+1) * time.Second)
+			video, audio := clockBuffers(t, hub, base, webrtc.MimeTypeH264)
+			ntp := uint64(4_000_000_000) << 32
+			for _, buf := range []*Buffer{video, audio} {
+				buf.SenderReport(0, ntp)
+				buf.Push(packet(500, seconds*buf.clockRate, idr()...))
+			}
+			require.False(t, video.Correct())
+			for _, buf := range []*Buffer{video, audio} {
+				// The counter is ahead of its last report but behind delivered media.
+				buf.SenderReport(buf.clockRate, ntp+(uint64(seconds+1)<<32))
+			}
+			require.False(t, video.Correct())
+			for _, buf := range []*Buffer{video, audio} {
+				buf.Push(packet(501, buf.clockRate, idr()...))
+				require.Len(t, buf.queue, 1)
+				assert.WithinDuration(t, time.Now().Add(2*time.Second), buf.queue[0].playAt, 100*time.Millisecond)
+				buf.SenderReport(2*buf.clockRate, ntp+(uint64(seconds+2)<<32))
+			}
+			require.False(t, video.Correct())
+			for _, clock := range hub.Playback("cam").Clocks {
+				assert.Equal(t, uint64(1), clock.Epoch, "the attached player must refresh both clocks once")
+			}
+		})
+	}
+}
+
+func TestResetKeepsLateCurrentMedia(t *testing.T) {
+	for _, first := range []bool{false, true} {
+		t.Run(map[bool]string{false: "in-order", true: "first-keyframe"}[first], func(t *testing.T) {
+			_, video, _ := resetPublisher(t, webrtc.MimeTypeH264, idr(), true)
+			if !first {
+				video.Push(packet(65534, 0, idr()...))
+			}
+			video.baseWall = video.baseWall.Add(-10 * time.Second)
+			video.Push(packet(65535, video.clockRate/50, idr()...))
+			assert.False(t, video.resetPending)
+			assert.Greater(t, video.peakLate, 7*time.Second, "current late media must still drive recovery")
+		})
+	}
+}
+
+func TestResetKeepsReorderedMediaWithinDynamicDelay(t *testing.T) {
+	var control dynamicdelay.Controller
+	now := time.Now()
+	options := dynamicdelay.Options{Enabled: true, MaximumMS: 10000}
+	control.Configure(10*time.Second, options, now)
+	control.Configure(2*time.Second, options, now)
+	buf := NewBuffer(2*time.Second, testClock, webrtc.MimeTypeH264, nil)
+	defer buf.Close()
+	buf.dynamic = &control
+	buf.based, buf.baseWall, buf.baseRTP = true, now, 5*testClock
+	buf.clockEpoch, buf.resetSequence = 1, 100
+	buf.Push(packet(99, 0, idr()...))
+	assert.Len(t, buf.queue, 1, "the grown delay still covers this reordered packet")
+}

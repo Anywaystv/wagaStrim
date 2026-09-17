@@ -19,7 +19,11 @@ func (b *Buffer) SenderReport(timestamp uint32, ntp uint64) {
 	if ntp == 0 || (b.senderNTP != 0 && (delta == 0 || delta > math.MaxInt64)) {
 		return
 	}
-	if b.senderNTP != 0 && rtpDelta(timestamp, b.senderRTP) < 0 {
+	// A reset can fall between reports while still advancing the report's counter.
+	ticks := rtpDelta(timestamp, b.senderRTP)
+	elapsed := time.Duration(delta>>32)*time.Second + time.Duration(delta&math.MaxUint32)*time.Second/(1<<32)
+	drift := elapsed - time.Duration(ticks)*time.Second/time.Duration(b.clockRate)
+	if b.senderNTP != 0 && (ticks < 0 || drift.Abs() > correctionMargin(b.target)) {
 		b.clockReset = true
 	}
 	b.senderRTP, b.senderNTP = timestamp, ntp
