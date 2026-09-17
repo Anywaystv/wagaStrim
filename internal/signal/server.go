@@ -3,11 +3,12 @@
 
 // Package signal is the public listener. It is deliberately not the same
 // listener as the settings UI: everything here is reachable from the internet
-// and gated on a key, and nothing here may expose settings.
+// and gated on a key. Administrative settings stay on the private listener.
 package signal
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Anywaystv/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/dynamicdelay"
 	"github.com/Anywaystv/wagaStrim/internal/egress"
 	"github.com/Anywaystv/wagaStrim/internal/ingest"
 	"github.com/Anywaystv/wagaStrim/internal/listen"
@@ -61,6 +63,8 @@ func New(cfg *config.Config, log logging.LeveledLogger, whip *ingest.Server, whe
 	mux.HandleFunc("POST /whep", srv.handleSubscribe)
 	mux.HandleFunc("DELETE /whep/resource/{resource}", srv.handleUnsubscribe)
 	mux.HandleFunc("GET /player/{key}", srv.handlePlayer)
+	mux.HandleFunc("GET /player/{key}/playback", srv.handlePlayback)
+	mux.HandleFunc("GET /player/{key}/dynamic/player.js", srv.handlePlaybackAsset)
 
 	srv.http = &http.Server{
 		Handler:           listen.Guard(mux),
@@ -205,6 +209,40 @@ func (s *Server) handlePlayer(wri http.ResponseWriter, req *http.Request) {
 
 	if _, err := wri.Write(page); err != nil {
 		s.log.Warnf("write player: %v", err)
+	}
+}
+
+func (s *Server) handlePlayback(wri http.ResponseWriter, req *http.Request) {
+	ing, role := s.cfg.Resolve(req.PathValue("key"))
+	if role != config.RoleReceiver {
+		http.Error(wri, "not found", http.StatusNotFound)
+
+		return
+	}
+	wri.Header().Set("content-type", "application/json")
+	wri.Header().Set("cache-control", "no-store")
+	if err := json.NewEncoder(wri).Encode(s.whep.Playback(ing.ID)); err != nil {
+		s.log.Warnf("write playback settings: %v", err)
+	}
+}
+
+func (s *Server) handlePlaybackAsset(wri http.ResponseWriter, req *http.Request) {
+	if _, role := s.cfg.Resolve(req.PathValue("key")); role != config.RoleReceiver {
+		http.Error(wri, "not found", http.StatusNotFound)
+
+		return
+	}
+	data, err := dynamicdelay.Assets.ReadFile("web/player.js")
+	if err != nil {
+		http.Error(wri, "not found", http.StatusNotFound)
+
+		return
+	}
+	wri.Header().Set("content-type", "text/javascript; charset=utf-8")
+	wri.Header().Set("x-content-type-options", "nosniff")
+	wri.Header().Set("cache-control", "no-store")
+	if _, err := wri.Write(data); err != nil {
+		s.log.Warnf("write playback asset: %v", err)
 	}
 }
 
