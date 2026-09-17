@@ -52,6 +52,9 @@ func (s *Stream) alignSenderClocksLocked() bool {
 			return false
 		}
 	}
+	for _, buf := range s.buffers {
+		s.senderBaseWall = s.senderBaseWall.Add(buf.senderCorrectionLocked())
+	}
 	established := !s.senderBaseWall.IsZero()
 	if !established {
 		anchor := s.buffers[0]
@@ -64,6 +67,26 @@ func (s *Stream) alignSenderClocksLocked() bool {
 	}
 
 	return true
+}
+
+// Only the track that caused a correction can undo it when a report reveals
+// a forward timestamp jump. A sibling's report must not undo valid recovery.
+func (b *Buffer) senderCorrectionLocked() time.Duration {
+	if b.correctionShift == 0 {
+		return 0
+	}
+	rollback := time.Duration((b.correctionMS - b.senderTimeMS(b.correctionRTP)) * float64(time.Millisecond))
+	if rollback > correctionMargin(b.target) {
+		rollback = min(rollback, b.correctionShift)
+		b.correctionShift = 0
+
+		return rollback
+	}
+	if b.clockReset || rtpDelta(b.senderRTP, b.correctionRTP) >= 0 {
+		b.correctionShift = 0
+	}
+
+	return 0
 }
 
 func (b *Buffer) alignSenderClockLocked(base time.Time, established bool) {
@@ -113,18 +136,26 @@ func (b *Buffer) moveClockLocked(shift time.Duration, reset bool) {
 
 func (s *Stream) clockCorrectionLocked(now time.Time, senderClocks bool) (time.Duration, bool) {
 	shift := time.Duration(0)
+	var source *Buffer
 	waiting := false
 	fresh := senderClocks || now.Sub(s.recoveryAt) >= clockRecoveryWindow
 	for _, buf := range s.buffers {
 		excess := buf.depthLocked() - buf.target
 		if excess > correctionMargin(buf.target) {
-			shift = max(shift, excess)
+			if excess > shift {
+				shift, source = excess, buf
+			}
 			fresh = fresh || buf.recoveryAt.Equal(s.recoveryAt)
 		}
 		waiting = waiting || buf.catchUp
 	}
 	if shift == 0 {
 		return 0, waiting
+	}
+	if senderClocks {
+		source.correctionShift += shift
+		source.correctionRTP = source.newestLocked().pkt.Timestamp
+		source.correctionMS = source.senderTimeMS(source.correctionRTP)
 	}
 	// A sibling may reach the same timestamp jump only after its link recovers.
 	// Reuse the recent correction instead of measuring that delayed arrival.

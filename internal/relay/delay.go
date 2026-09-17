@@ -37,6 +37,11 @@ type Buffer struct {
 	resetPending  bool
 	resetSequence uint16
 
+	// A later sender report may identify a depth correction as a timestamp jump.
+	correctionShift time.Duration
+	correctionRTP   uint32
+	correctionMS    float64
+
 	// catchUp drops video until a keyframe can resume playback after correction.
 	catchUp  bool
 	keyframe func()
@@ -253,15 +258,19 @@ func (b *Buffer) wake() {
 }
 
 func (b *Buffer) depthLocked() time.Duration {
-	var newest time.Time
+	return max(0, time.Until(b.newestLocked().playAt))
+}
+
+func (b *Buffer) newestLocked() buffered {
+	var newest buffered
 
 	for _, item := range b.queue {
-		if item.playAt.After(newest) {
-			newest = item.playAt
+		if item.playAt.After(newest.playAt) {
+			newest = item
 		}
 	}
 
-	return max(0, time.Until(newest))
+	return newest
 }
 
 // Correct discards excess depth across registered tracks and requests a keyframe.
@@ -419,6 +428,10 @@ func (b *Buffer) Close() {
 	defer b.mu.Unlock()
 
 	b.closed = true
+	// Untracked buffers no longer receive clock corrections from the stream.
+	if b.depthLocked()-b.target > correctionMargin(b.target) {
+		b.dropAllLocked()
+	}
 	b.ready.Broadcast()
 }
 
