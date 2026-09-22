@@ -11,7 +11,7 @@ Enable it in the camera settings to show:
 - **Maximum delay:** up to 10000 ms, the default. Cannot be below the normal delay.
 - **Automatic catch-up speed:** on by default. Scales from 1.01x to 1.2x as delay grows.
 - **Catch-up speed:** shown when automatic speed is off. 1 to 200 ms of delay removed per second, with a saved default of 10 ms/s.
-- **Jump fallback:** skip to a keyframe if the required delay exceeds the maximum.
+- **Jump fallback:** on by default. Skip to a keyframe if the required delay exceeds the maximum.
 
 Settings are saved per camera. Automatic/manual speed, maximum and jump changes apply live;
 the built-in player reconnects when dynamic delay is switched on or off. Sync groups keep their fixed delay
@@ -25,8 +25,9 @@ and any pending recovery; the new rate applies on the next tick.
 
 Automatic speed starts at 10 ms/s and reaches 200 ms/s at 90% of the space
 between normal and maximum delay. The player also counts its own excess buffer.
-It changes acceleration in 0.01x steps, at most once per second, and keeps the
-existing buffer thresholds to avoid stuttering or draining too far. Near the
+Automatic playback rates are rounded to 0.01x. Changes between accelerated rates
+are limited to once per second; returning to normal speed or slowing down can
+happen sooner. Buffer thresholds avoid stuttering or draining too far. Near the
 normal delay it returns to 1x. Older camera settings default to automatic speed;
 the API field `autoCatchUp: false` selects manual speed.
 
