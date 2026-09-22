@@ -11,6 +11,7 @@ import (
 	"github.com/Anywaystv/wagaStrim/internal/relay"
 	"github.com/Anywaystv/wagaStrim/internal/stats"
 	"github.com/pion/logging"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	pionmedia "github.com/pion/webrtc/v4/pkg/media"
 	"github.com/stretchr/testify/assert"
@@ -40,7 +41,7 @@ func newTestServerWithRelay(t *testing.T) (*Server, *config.Ingest, *relay.Relay
 
 	hub := relay.New()
 
-	srv, err := NewServer(cfg, log, engine, hub, stats.New(), func(string) {})
+	srv, err := NewServer(cfg, log, engine, hub, stats.New(hub), func(string) {})
 	require.NoError(t, err)
 	t.Cleanup(srv.Close)
 
@@ -79,7 +80,7 @@ func offerFrom(t *testing.T, peer *webrtc.PeerConnection) string {
 }
 
 func TestPublisherMediaReachesTheIngest(t *testing.T) {
-	srv, ing := newTestServer(t)
+	srv, ing, hub := newTestServerWithRelay(t)
 	peer, track := publisher(t)
 
 	answer, resource, err := srv.Publish(ing.SenderKey, offerFrom(t, peer))
@@ -118,6 +119,17 @@ func TestPublisherMediaReachesTheIngest(t *testing.T) {
 
 	assert.Equal(t, "H.264", srv.stats.Of(ing.ID).Codec,
 		"the negotiated codec must be discovered from the track, not assumed from the toggles")
+
+	clocks := hub.Playback(ing.ID).Clocks
+	require.Len(t, clocks, 1)
+	report := &rtcp.SenderReport{
+		SSRC:    uint32(peer.GetSenders()[0].GetParameters().Encodings[0].SSRC),
+		RTPTime: clocks[0].Timestamp, NTPTime: uint64(4_000_000_000) << 32,
+	}
+	require.NoError(t, peer.WriteRTCP([]rtcp.Packet{report}))
+	require.Eventually(t, func() bool {
+		return hub.Playback(ing.ID).Clocks[0].ReferenceMS == 4_000_000_000_000
+	}, time.Second, 10*time.Millisecond, "the received sender report must reach playback timing")
 
 	require.NoError(t, srv.Teardown(resource))
 

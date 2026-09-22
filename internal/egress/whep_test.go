@@ -38,7 +38,7 @@ func pipeline(t *testing.T) (*ingest.Server, *egress.Server, *config.Ingest) {
 	// Wired as main wires it.
 	var whep *egress.Server
 
-	whip, err := ingest.NewServer(cfg, log, engine, hub, stats.New(),
+	whip, err := ingest.NewServer(cfg, log, engine, hub, stats.New(hub),
 		func(id string) { whep.CloseIngest(id) })
 	require.NoError(t, err)
 	t.Cleanup(whip.Close)

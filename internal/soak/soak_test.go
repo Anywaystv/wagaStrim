@@ -92,7 +92,7 @@ func TestSoak(t *testing.T) {
 
 	log := logging.NewDefaultLoggerFactory().NewLogger("soak")
 	hub := relay.New()
-	counters := stats.New()
+	counters := stats.New(hub)
 
 	whip, err := ingest.NewServer(cfg, log, engine, hub, counters, func(string) {})
 	require.NoError(t, err)

@@ -8,9 +8,11 @@ package relay
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/Anywaystv/wagaStrim/internal/dynamicdelay"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -24,8 +26,16 @@ const keyframeInterval = 500 * time.Millisecond
 type Stream struct {
 	mu sync.RWMutex
 
-	tracks  map[webrtc.RTPCodecType]*webrtc.TrackLocalStaticRTP
-	buffers []*Buffer
+	tracks         map[webrtc.RTPCodecType]*webrtc.TrackLocalStaticRTP
+	buffers        []*Buffer
+	delay          dynamicdelay.Controller
+	lastAdjust     time.Time
+	recoveryAt     time.Time
+	recoveryShift  time.Duration
+	senderBaseMS   float64
+	senderBaseWall time.Time
+	late           uint64
+	dropped        uint64
 
 	// Request an IDR when viewers join, avoiding a wait for the next keyframe.
 	keyframe     func()
@@ -151,6 +161,13 @@ func (r *Relay) Track(ingestID string, buf *Buffer) {
 	defer stream.mu.Unlock()
 
 	stream.buffers = append(stream.buffers, buf)
+	buf.stream = stream
+	buf.recoveryAt = stream.recoveryAt
+	if state := stream.delay.State(); state != nil {
+		buf.dynamic = &stream.delay
+		buf.shift = state.Shift
+		buf.cutoff = state.Cutoff
+	}
 }
 
 // Untrack releases ended buffers so reconnects do not grow the retarget list.
@@ -168,6 +185,11 @@ func (r *Relay) Untrack(ingestID string, buf *Buffer) {
 
 	for idx, held := range stream.buffers {
 		if held == buf {
+			if strings.HasPrefix(strings.ToLower(buf.mime), "video/") {
+				late, dropped := buf.Stats()
+				stream.late += late
+				stream.dropped += dropped
+			}
 			stream.buffers = slices.Delete(stream.buffers, idx, idx+1)
 
 			return
@@ -175,22 +197,66 @@ func (r *Relay) Untrack(ingestID string, buf *Buffer) {
 	}
 }
 
-// Retarget moves every running buffer of one ingest to a new playout target.
-func (r *Relay) Retarget(ingestID string, target time.Duration) {
-	r.mu.RLock()
-	stream, ok := r.streams[ingestID]
-	r.mu.RUnlock()
-
-	if !ok {
+func (s *Stream) adjustDelay(now time.Time) {
+	if s.delay.State() == nil {
 		return
 	}
+	s.mu.Lock()
+	if now.Sub(s.lastAdjust) < correctionInterval {
+		s.mu.Unlock()
 
-	stream.mu.RLock()
-	buffers := slices.Clone(stream.buffers)
-	stream.mu.RUnlock()
+		return
+	}
+	s.lastAdjust = now
+	late := time.Duration(0)
+	for _, buf := range s.buffers {
+		buf.mu.Lock()
+		// Apply jumps before sampling lateness or retiring the disabled curve.
+		buf.dynamicOffsetLocked(now)
+		late = max(late, buf.peakLate)
+		buf.peakLate = 0
+		buf.mu.Unlock()
+	}
+	state := s.delay.Step(now, late)
+	for _, buf := range s.buffers {
+		buf.wake()
+	}
+	s.mu.Unlock()
+	if state != nil && state.Pending {
+		s.askKeyframe()
+	}
+}
 
-	for _, buf := range buffers {
+// ConfigureDelay applies one policy to both tracks; fixed-delay cameras keep
+// the existing scheduler until this option is explicitly enabled.
+func (r *Relay) ConfigureDelay(ingestID string, target time.Duration, options dynamicdelay.Options) {
+	r.mu.RLock()
+	stream := r.streams[ingestID]
+	r.mu.RUnlock()
+	if stream == nil {
+		return
+	}
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	previous := stream.delay.State()
+	stream.delay.Configure(target, options, time.Now())
+	changed := previous != stream.delay.State()
+	for _, buf := range stream.buffers {
 		buf.SetTarget(target)
+		buf.mu.Lock()
+		// Lateness measured under the previous settings must not trigger a jump.
+		if changed {
+			buf.peakLate = 0
+		}
+		if state := stream.delay.State(); state != nil {
+			if buf.dynamic == nil {
+				buf.shift = state.Shift
+				buf.cutoff = state.Cutoff
+			}
+			buf.dynamic = &stream.delay
+		}
+		buf.ready.Signal()
+		buf.mu.Unlock()
 	}
 }
 
