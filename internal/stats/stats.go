@@ -30,8 +30,8 @@ type Snapshot struct {
 	// Codec is the negotiated codec, not the configured list of allowed codecs.
 	Codec string `json:"codec,omitempty"`
 
-	// RTT on the nominated pair, and packets the receiver never got. Both come
-	// from the report the pair count is already reading.
+	// RTT on the nominated pair and Pion's inbound loss estimate. RTX recovery
+	// can leave recovered packets counted as lost.
 	RTT  int    `json:"rttMs,omitempty"`
 	Lost uint64 `json:"packetsLost"`
 

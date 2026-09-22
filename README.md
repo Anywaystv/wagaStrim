@@ -109,6 +109,22 @@ For a local HTTPS reverse proxy, omit the TLS fields and set `signalBind` to
 `127.0.0.1` and `publicUrl` to `https://stream.example.com`. Use HTTPS or an
 encrypted VPN for internet access.
 
+## Dashboard statistics
+
+The bitrate in kbps averages incoming audio and video over roughly five seconds.
+It continues updating when video pauses but audio is still arriving. A nonzero
+bitrate does not mean the picture is moving.
+
+**Late** counts video packets that arrived after their scheduled playback time;
+a late packet is not necessarily discarded. **Dropped** counts video packets
+discarded by the relay during recovery. These are packet counts, not frame
+counts or network-loss totals.
+
+The [control API](docs/API.html) also exposes `packetsLost`, Pion's inbound
+packet-loss estimate. The built-in dashboard does not display it. RTX recovery
+can leave recovered packets counted as lost, so this is not an exact measure
+of unrecovered loss or visible playback damage.
+
 ## Release packaging
 
 For a distributable headless build, run `sh scripts/build-release.sh` with Go installed.

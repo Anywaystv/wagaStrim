@@ -57,9 +57,8 @@ func roundTrip(report webrtc.StatsReport) int {
 	return 0
 }
 
-// packetsLost is what the receiver never got and could not have retransmitted in
-// time. NACK recovers most of it, so a rising count is the link degrading rather
-// than a picture already broken.
+// packetsLost sums Pion's positive inbound loss estimates. RTX recovery can leave
+// recovered packets counted as lost, so this is not a count of unrecovered media.
 func packetsLost(report webrtc.StatsReport) uint64 {
 	var lost int32
 
