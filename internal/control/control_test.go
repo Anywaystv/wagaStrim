@@ -4,14 +4,19 @@
 package control
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Anywaystv/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/dynamicdelay"
+	"github.com/Anywaystv/wagaStrim/internal/relay"
 	"github.com/Anywaystv/wagaStrim/internal/stats"
 	"github.com/pion/logging"
+	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -138,7 +143,7 @@ func testServer(t *testing.T) (*Server, *config.Config, *[]string) {
 	cfg.FloorMS = new(300)
 	revoked := &[]string{}
 
-	srv := New(cfg, logging.NewDefaultLoggerFactory().NewLogger("test"), stats.New(),
+	srv := New(cfg, logging.NewDefaultLoggerFactory().NewLogger("test"), stats.New(relay.New()),
 		func(id string) { *revoked = append(*revoked, id) }, nil)
 
 	return srv, cfg, revoked
@@ -206,6 +211,42 @@ func TestDynamicDelayAppliesLiveWithoutRevokingTheCamera(t *testing.T) {
 	assert.Empty(t, *revoked)
 	assert.Equal(t, 4500, cfg.List()[0].MaximumMS)
 	assert.False(t, cfg.List()[0].Jump)
+}
+
+func TestStatsExposeLiveRelayPlayoutAndClearItWhenStopped(t *testing.T) {
+	srv, _, _ := testServer(t)
+	require.Equal(t, http.StatusNoContent, put(t, srv, token, list("a")).Code)
+	hub := relay.New()
+	srv.counters = stats.New(hub)
+	_, err := hub.Publish("cam1", webrtc.RTPCodecTypeVideo,
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000}, nil)
+	require.NoError(t, err)
+	hub.ConfigureDelay("cam1", 300*time.Millisecond, dynamicdelay.Options{Enabled: true})
+	buffer := relay.NewBuffer(300*time.Millisecond, 90000, webrtc.MimeTypeH264, nil)
+	t.Cleanup(buffer.Close)
+	hub.Track("cam1", buffer)
+	srv.counters.Publishing("cam1")
+	for _, live := range []bool{true, false} {
+		if !live {
+			srv.counters.Stopped("cam1")
+		}
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/control/stats", nil)
+		req.RemoteAddr = loopbackPeer
+		req.Header.Set("Authorization", "Bearer "+token)
+		res := httptest.NewRecorder()
+		srv.http.Handler.ServeHTTP(res, req)
+		require.Equal(t, http.StatusOK, res.Code)
+		var body map[string]map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(res.Body.Bytes(), &body))
+		if live {
+			assert.JSONEq(t, `{"dynamicDelay":true,"delayMs":300,"currentDelayMs":300,`+
+				`"catchUpMsPerSecond":0,"jumpPending":false}`, string(body["cam1"]["playout"]))
+		} else {
+			assert.NotContains(t, body["cam1"], "playout")
+		}
+		assert.NotContains(t, res.Body.String(), "senderKey")
+		assert.NotContains(t, res.Body.String(), "receiverKey")
+	}
 }
 
 func TestASessionWhoseKeysMovedIsDropped(t *testing.T) {

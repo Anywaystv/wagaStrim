@@ -140,6 +140,16 @@ async function poll() {
     if (snap.pathsTotal) parts.push(`${snap.pathsLive}/${snap.pathsTotal} paths usable`);
     if (snap.late) parts.push(`${snap.late} late`);
     if (snap.dropped) parts.push(`${snap.dropped} dropped`);
+    if (snap.playout) {
+      const playout = snap.playout;
+      parts.push(`${Math.round(playout.currentDelayMs)} ms relay delay`);
+      if (playout.dynamicDelay) {
+        if (playout.jumpPending) parts.push("waiting for a keyframe to jump");
+        else if (playout.catchUpMsPerSecond > 0) {
+          parts.push(`relay catching up ${Number(playout.catchUpMsPerSecond.toFixed(1))} ms/s`);
+        } else parts.push("dynamic delay on");
+      }
+    }
 
     line.textContent = parts.join(", ") + (snap.advice ? ". " + snap.advice : "");
   }

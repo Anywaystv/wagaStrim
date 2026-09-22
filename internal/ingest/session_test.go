@@ -37,10 +37,11 @@ func TestLateStopDoesNotDropReplacementMedia(t *testing.T) {
 	old := &Session{Resource: previousResource, IngestID: sessionCamera}
 	current := &Session{Resource: replacementResource, IngestID: sessionCamera}
 	var stopped atomic.Int32
+	hub := relay.New()
 	server := &Server{
 		sessions: map[string]*Session{previousResource: old, replacementResource: current},
 		byIngest: map[string]string{sessionCamera: replacementResource},
-		relay:    relay.New(), stats: stats.New(),
+		relay:    hub, stats: stats.New(hub),
 		stopped: func(string) { stopped.Add(1) },
 	}
 	server.stats.Publishing(sessionCamera)

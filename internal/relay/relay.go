@@ -8,6 +8,7 @@ package relay
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,8 @@ type Stream struct {
 	recoveryShift  time.Duration
 	senderBaseMS   float64
 	senderBaseWall time.Time
+	late           uint64
+	dropped        uint64
 
 	// Request an IDR when viewers join, avoiding a wait for the next keyframe.
 	keyframe     func()
@@ -182,6 +185,11 @@ func (r *Relay) Untrack(ingestID string, buf *Buffer) {
 
 	for idx, held := range stream.buffers {
 		if held == buf {
+			if strings.HasPrefix(strings.ToLower(buf.mime), "video/") {
+				late, dropped := buf.Stats()
+				stream.late += late
+				stream.dropped += dropped
+			}
 			stream.buffers = slices.Delete(stream.buffers, idx, idx+1)
 
 			return

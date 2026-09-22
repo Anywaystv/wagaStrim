@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Anywaystv/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/relay"
 	"github.com/Anywaystv/wagaStrim/internal/stats"
 	"github.com/pion/logging"
 	"github.com/stretchr/testify/assert"
@@ -25,7 +26,7 @@ const (
 func TestTokenBootstrapGuardsAndGuide(t *testing.T) {
 	cfg := &config.Config{UIPort: testPort, ControlToken: "keep-existing-secret"}
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
-	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
+	srv, err := New(cfg, log, stats.New(relay.New()), func(string) {}, func(string, int) {})
 	require.NoError(t, err)
 	for _, site := range []string{sameOrigin, crossSite, "same-site"} {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
@@ -63,7 +64,7 @@ func TestTokenBootstrapGuardsAndGuide(t *testing.T) {
 func TestTokenBootstrapDoesNotClaimSuccessOnSaveFailure(t *testing.T) {
 	cfg := &config.Config{UIPort: testPort}
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
-	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
+	srv, err := New(cfg, log, stats.New(relay.New()), func(string) {}, func(string, int) {})
 	require.NoError(t, err)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
 		"http://127.0.0.1:7330/api/control/token", nil)
@@ -78,7 +79,7 @@ func TestLANControlToggleRendersSavedState(t *testing.T) {
 		cfg := &config.Config{UIPort: testPort, ControlToken: "configured", ControlLAN: &on}
 		cfg.ControlRemote = &on
 		log := logging.NewDefaultLoggerFactory().NewLogger("test")
-		srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
+		srv, err := New(cfg, log, stats.New(relay.New()), func(string) {}, func(string, int) {})
 		require.NoError(t, err)
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:7330/", nil)
 		res := httptest.NewRecorder()
@@ -94,7 +95,7 @@ func TestLANControlToggleRendersSavedState(t *testing.T) {
 func TestLANControlToggleRejectsCrossSiteAndInvalidBody(t *testing.T) {
 	cfg := &config.Config{UIPort: testPort}
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
-	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
+	srv, err := New(cfg, log, stats.New(relay.New()), func(string) {}, func(string, int) {})
 	require.NoError(t, err)
 	for _, site := range []string{sameOrigin, crossSite} {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
@@ -119,7 +120,7 @@ func get(t *testing.T, host, site string) int {
 	cfg := &config.Config{UIPort: testPort}
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
 
-	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
+	srv, err := New(cfg, log, stats.New(relay.New()), func(string) {}, func(string, int) {})
 	require.NoError(t, err)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
@@ -165,7 +166,7 @@ func TestCameraSettingsCollapseIndependently(t *testing.T) {
 		{ID: "cam2", Label: "Drone", DelayMS: 3000, SyncGroup: "outside"},
 	}}
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
-	srv, err := New(cfg, log, stats.New(), func(string) {}, func(string, int) {})
+	srv, err := New(cfg, log, stats.New(relay.New()), func(string) {}, func(string, int) {})
 	require.NoError(t, err)
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://127.0.0.1:7330/", nil)
 	res := httptest.NewRecorder()
@@ -195,7 +196,7 @@ func TestResetKeyRejectsCrossSiteRequests(t *testing.T) {
 	cfg := &config.Config{UIPort: testPort}
 	log := logging.NewDefaultLoggerFactory().NewLogger("test")
 	revoked := false
-	srv, err := New(cfg, log, stats.New(), func(string) { revoked = true }, func(string, int) {})
+	srv, err := New(cfg, log, stats.New(relay.New()), func(string) { revoked = true }, func(string, int) {})
 	require.NoError(t, err)
 	for _, site := range []string{sameOrigin, crossSite} {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,

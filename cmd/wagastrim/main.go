@@ -57,8 +57,8 @@ func run(headless bool, log logging.LeveledLogger) error {
 		log.Warnf("HTTP sends stream keys without encryption; use HTTPS or an encrypted VPN for internet access")
 	}
 
-	counters := stats.New()
 	hub := relay.New()
+	counters := stats.New(hub)
 
 	// Wired after the servers exist; the UI only calls these from handlers.
 	var (

@@ -7,15 +7,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Anywaystv/wagaStrim/internal/dynamicdelay"
+	"github.com/Anywaystv/wagaStrim/internal/relay"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestUnknownIngestIsEmpty(t *testing.T) {
-	assert.Equal(t, Snapshot{}, New().Of("nope"))
+	assert.Equal(t, Snapshot{}, New(relay.New()).Of("nope"))
 }
 
 func TestBitrateAveragesAcrossSamples(t *testing.T) {
-	reg := New()
+	reg := New(relay.New())
 	reg.Publishing("cam")
 
 	entry := reg.counters["cam"]
@@ -45,7 +47,7 @@ func TestBitrateFallsToZeroWhenMediaStops(t *testing.T) {
 }
 
 func TestStoppedKeepsTheLastState(t *testing.T) {
-	reg := New()
+	reg := New(relay.New())
 	reg.Publishing("cam")
 	reg.Observe("cam", 1000, 3, 0)
 	reg.Stopped("cam")
@@ -65,9 +67,25 @@ func TestAdviceNamesTheFix(t *testing.T) {
 	assert.Empty(t, advise(Snapshot{}, true, true), "an idle camera has nothing to advise")
 }
 
+func TestDynamicAdviceDescribesRecoveryWithoutRequestingAFixedDelay(t *testing.T) {
+	live := Snapshot{Live: true, Playout: &dynamicdelay.Status{Enabled: true}}
+	assert.Equal(t, "The relay discarded packets during recovery.", advise(live, true, true))
+	assert.Equal(t, "Packets have recently arrived after their slot.", advise(live, true, false))
+	assert.Empty(t, advise(live, false, false))
+}
+
+func TestAdviceUpdatesBetweenBitrateSamples(t *testing.T) {
+	reg := New(relay.New())
+	reg.Publishing("cam")
+	reg.Observe("cam", 1000, 0, 0)
+	reg.Observe("cam", 1100, 1, 2)
+	assert.Contains(t, reg.Of("cam").Advice, "Skipping to keyframes")
+	assert.Len(t, reg.counters["cam"].samples, 1, "counter changes must not bypass the bitrate sampling limit")
+}
+
 // A single late packet must not pin advice on screen for the rest of the stream.
 func TestAdviceClearsAfterRecovery(t *testing.T) {
-	reg := New()
+	reg := New(relay.New())
 	reg.Publishing("cam")
 	reg.Observe("cam", 1000, 1, 0)
 
@@ -81,7 +99,7 @@ func TestAdviceClearsAfterRecovery(t *testing.T) {
 
 // Sampling every packet would churn the slice thousands of times a second.
 func TestSamplesAreRateLimited(t *testing.T) {
-	reg := New()
+	reg := New(relay.New())
 	reg.Publishing("cam")
 
 	for i := range 100 {
@@ -95,7 +113,7 @@ func TestSamplesAreRateLimited(t *testing.T) {
 }
 
 func TestObserveIgnoresAnIngestThatIsNotPublishing(t *testing.T) {
-	reg := New()
+	reg := New(relay.New())
 	reg.Observe("cam", 500, 0, 0)
 
 	assert.False(t, reg.Of("cam").Live, "observing must not resurrect a dead ingest")
@@ -104,7 +122,7 @@ func TestObserveIgnoresAnIngestThatIsNotPublishing(t *testing.T) {
 // The first pair is the connection forming, not a re-home. Counting it would
 // report a network change on every stream that ever worked.
 func TestFirstPathIsNotASwitch(t *testing.T) {
-	reg := New()
+	reg := New(relay.New())
 	reg.Publishing("cam")
 	reg.Path("cam", "direct over udp via 192.168.1.2")
 
@@ -113,7 +131,7 @@ func TestFirstPathIsNotASwitch(t *testing.T) {
 }
 
 func TestRehomingCounts(t *testing.T) {
-	reg := New()
+	reg := New(relay.New())
 	reg.Publishing("cam")
 	reg.Path("cam", "local network over udp via 192.168.1.2")
 	reg.Path("cam", "through NAT over udp via 192.168.1.2")
@@ -123,7 +141,7 @@ func TestRehomingCounts(t *testing.T) {
 }
 
 func TestRepeatingThePathIsNotAChange(t *testing.T) {
-	reg := New()
+	reg := New(relay.New())
 	reg.Publishing("cam")
 
 	for range 5 {
@@ -136,7 +154,7 @@ func TestRepeatingThePathIsNotAChange(t *testing.T) {
 // A phone that reconnects has still moved networks; losing the count would hide
 // exactly the flapping worth seeing.
 func TestSwitchCountSurvivesAReconnect(t *testing.T) {
-	reg := New()
+	reg := New(relay.New())
 	reg.Publishing("cam")
 	reg.Path("cam", "a")
 	reg.Path("cam", "b")
@@ -149,7 +167,7 @@ func TestSwitchCountSurvivesAReconnect(t *testing.T) {
 // The codec is negotiated once per session but read on every poll, so it has to
 // outlive the connection that discovered it.
 func TestCodecSurvivesAReconnect(t *testing.T) {
-	reg := New()
+	reg := New(relay.New())
 	reg.Publishing("cam")
 	reg.Codec("cam", "H.264")
 	reg.Stopped("cam")
@@ -162,7 +180,7 @@ func TestCodecSurvivesAReconnect(t *testing.T) {
 // while it settles. Reading the lifetime drop count kept "skipping to keyframes"
 // on screen for a buffer that had not skipped in minutes.
 func TestSkippingAdviceFollowsRecentDropsNotTheLifetimeTotal(t *testing.T) {
-	reg := New()
+	reg := New(relay.New())
 	reg.Publishing("cam")
 	reg.Observe("cam", 1000, 10, 5)
 
@@ -171,9 +189,6 @@ func TestSkippingAdviceFollowsRecentDropsNotTheLifetimeTotal(t *testing.T) {
 	reg.mu.Lock()
 	entry := reg.counters["cam"]
 	entry.lastSkipped = time.Now().Add(-2 * adviceWindow)
-	// The sample has to age too. A second Observe inside the sampling interval
-	// returns at the rate limit without ever reaching the branch under test.
-	entry.samples[len(entry.samples)-1].at = time.Now().Add(-2 * sampleEvery)
 	reg.mu.Unlock()
 
 	// The same skip count as before: nothing new was dropped, only arrived late.
@@ -181,4 +196,26 @@ func TestSkippingAdviceFollowsRecentDropsNotTheLifetimeTotal(t *testing.T) {
 
 	assert.Equal(t, "Packets are arriving after their slot. Raise the delay for this camera.",
 		reg.Of("cam").Advice, "late packets alone must not report a skip that stopped")
+}
+
+func TestAudioSamplesPreserveVideoBufferCounters(t *testing.T) {
+	reg := New(relay.New())
+	reg.Publishing("cam")
+	reg.Observe("cam", 1000, 3, 2)
+	entry := reg.counters["cam"]
+	entry.samples[0].at = time.Now().Add(-time.Second)
+	moved, skipped := entry.lastMoved, entry.lastSkipped
+	reg.ObserveBytes("cam", 9000)
+	snap := reg.Of("cam")
+	assert.Positive(t, snap.Bitrate)
+	assert.Equal(t, uint64(3), snap.Late)
+	assert.Equal(t, uint64(2), snap.Dropped)
+	assert.Equal(t, moved, entry.lastMoved)
+	assert.Equal(t, skipped, entry.lastSkipped)
+	for range 100 {
+		reg.ObserveBytes("cam", 9000)
+	}
+	assert.Len(t, entry.samples, 2, "audio must share the bitrate sampling limit")
+	reg.ObserveBytes("unknown", 1000)
+	assert.Equal(t, Snapshot{}, reg.Of("unknown"))
 }

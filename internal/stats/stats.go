@@ -7,6 +7,9 @@ package stats
 import (
 	"sync"
 	"time"
+
+	"github.com/Anywaystv/wagaStrim/internal/dynamicdelay"
+	"github.com/Anywaystv/wagaStrim/internal/relay"
 )
 
 // window is how far back the bitrate average reaches. Long enough that a single
@@ -30,8 +33,8 @@ type Snapshot struct {
 	// Codec is the negotiated codec, not the configured list of allowed codecs.
 	Codec string `json:"codec,omitempty"`
 
-	// RTT on the nominated pair, and packets the receiver never got. Both come
-	// from the report the pair count is already reading.
+	// RTT on the nominated pair and Pion's inbound loss estimate. RTX recovery
+	// can leave recovered packets counted as lost.
 	RTT  int    `json:"rttMs,omitempty"`
 	Lost uint64 `json:"packetsLost"`
 
@@ -40,6 +43,8 @@ type Snapshot struct {
 	// per-path traffic cannot be measured. See internal/ingest/paths.go.
 	PathsLive  int `json:"pathsLive"`
 	PathsTotal int `json:"pathsTotal"`
+
+	Playout *dynamicdelay.Status `json:"playout,omitempty"`
 }
 
 type sample struct {
@@ -76,11 +81,12 @@ type counter struct {
 type Registry struct {
 	mu       sync.Mutex
 	counters map[string]*counter
+	relay    *relay.Relay
 }
 
 // New builds an empty registry.
-func New() *Registry {
-	return &Registry{counters: map[string]*counter{}}
+func New(hub *relay.Relay) *Registry {
+	return &Registry{counters: map[string]*counter{}, relay: hub}
 }
 
 // Publishing marks an ingest live and resets its window.
@@ -108,6 +114,7 @@ func (r *Registry) Stopped(ingestID string) {
 	defer r.mu.Unlock()
 
 	if entry, ok := r.counters[ingestID]; ok {
+		r.playout(ingestID, entry)
 		entry.live = false
 		entry.samples = nil
 	}
@@ -186,29 +193,43 @@ func (r *Registry) Observe(ingestID string, total, late, dropped uint64) {
 	}
 
 	now := time.Now()
-	entry.late = late
-	entry.dropped = dropped
+	entry.observeBuffer(late, dropped, now)
+	entry.observe(total, now)
+}
 
-	// Sampling every packet buys no accuracy over a five second average and
-	// churns the slice thousands of times a second.
-	if len(entry.samples) > 0 && now.Sub(entry.samples[len(entry.samples)-1].at) < sampleEvery {
+// ObserveBytes samples incoming audio without replacing the video buffer counters.
+func (r *Registry) ObserveBytes(ingestID string, total uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if entry, ok := r.counters[ingestID]; ok {
+		entry.observe(total, time.Now())
+	}
+}
+
+func (c *counter) observeBuffer(late, dropped uint64, now time.Time) {
+	c.late, c.dropped = late, dropped
+	if bad := late + dropped; bad > c.prevBad {
+		c.prevBad = bad
+		c.lastMoved = now
+	}
+
+	if dropped > c.prevSkipped {
+		c.prevSkipped = dropped
+		c.lastSkipped = now
+	}
+}
+
+func (c *counter) observe(total uint64, now time.Time) {
+	// Audio and video share one sampling limit for the five-second average.
+	if len(c.samples) > 0 && now.Sub(c.samples[len(c.samples)-1].at) < sampleEvery {
 		return
 	}
-
-	if bad := late + dropped; bad > entry.prevBad {
-		entry.prevBad = bad
-		entry.lastMoved = now
-	}
-
-	if dropped > entry.prevSkipped {
-		entry.prevSkipped = dropped
-		entry.lastSkipped = now
-	}
-	entry.samples = append(entry.samples, sample{at: now, bytes: total})
+	c.samples = append(c.samples, sample{at: now, bytes: total})
 
 	cutoff := now.Add(-window)
-	for len(entry.samples) > 1 && entry.samples[0].at.Before(cutoff) {
-		entry.samples = entry.samples[1:]
+	for len(c.samples) > 1 && c.samples[0].at.Before(cutoff) {
+		c.samples = c.samples[1:]
 	}
 }
 
@@ -234,7 +255,9 @@ func (r *Registry) Of(ingestID string) Snapshot {
 		return Snapshot{}
 	}
 
+	playout := r.playout(ingestID, entry)
 	snap := Snapshot{
+		Playout:    playout,
 		Live:       entry.live,
 		Bitrate:    bitrate(entry.samples, time.Now()),
 		Late:       entry.late,
@@ -257,6 +280,19 @@ func (r *Registry) Of(ingestID string) Snapshot {
 		time.Since(entry.lastSkipped) < adviceWindow)
 
 	return snap
+}
+
+func (r *Registry) playout(ingestID string, entry *counter) *dynamicdelay.Status {
+	if !entry.live {
+		return nil
+	}
+	current, ok := r.relay.Stats(ingestID)
+	if !ok {
+		return nil
+	}
+	entry.observeBuffer(current.Late, current.Dropped, time.Now())
+
+	return current.Playout
 }
 
 // bitrate averages across the window rather than between the last two samples,
@@ -291,6 +327,12 @@ func advise(snap Snapshot, recent, skipping bool) string {
 	switch {
 	case !snap.Live, !recent:
 		return ""
+	case snap.Playout != nil && snap.Playout.Enabled:
+		if skipping {
+			return "The relay discarded packets during recovery."
+		}
+
+		return "Packets have recently arrived after their slot."
 	case skipping:
 		return "Skipping to keyframes to keep up. Raise the delay for this camera."
 	default:

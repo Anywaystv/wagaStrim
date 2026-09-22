@@ -120,6 +120,37 @@ test("header media status follows live and idle stats", async () => {
   }
 });
 
+test("camera stats show live relay delay and catch-up without treating a saved limit as playback speed", async () => {
+  const nodes = dashboardNodes();
+  const badge = element(), line = element();
+  const card = { dataset: { id: "cam" }, querySelector: selector => selector === "[data-status]" ? badge : line };
+  let snapshot = { live: true, bitrateKbps: 72, liveSeconds: 10, late: 3, dropped: 2 };
+  const context = {
+    document: {
+      addEventListener() {}, getElementById: id => nodes[id],
+      querySelectorAll: selector => selector === "section[data-id]" ? [card] : [],
+    },
+    fetch: async () => ({ ok: true, json: async () => ({ cam: snapshot }) }),
+    setInterval() {}, console,
+  };
+  runInNewContext(read("internal/ui/web/app.js"), context);
+  for (const [playout, expected] of [
+    [undefined, "72 kbps, up 10s, 3 late, 2 dropped"],
+    [{ dynamicDelay: true, currentDelayMs: 2400.4, catchUpMsPerSecond: 0 }, "2400 ms relay delay, dynamic delay on"],
+    [{ dynamicDelay: true, currentDelayMs: 2250, catchUpMsPerSecond: 100 }, "2250 ms relay delay, relay catching up 100 ms/s"],
+    [{ dynamicDelay: true, currentDelayMs: 3000, catchUpMsPerSecond: 0, jumpPending: true }, "waiting for a keyframe to jump"],
+    [{ dynamicDelay: false, currentDelayMs: 2000, catchUpMsPerSecond: 0 }, "2000 ms relay delay"],
+  ]) {
+    snapshot.playout = playout;
+    await context.poll();
+    assert.ok(line.textContent.endsWith(expected), line.textContent);
+    assert.ok(line.textContent.includes("3 late, 2 dropped"));
+  }
+  snapshot = { ...snapshot, live: false };
+  await context.poll();
+  assert.equal(line.textContent, "Waiting for a publisher.");
+});
+
 test("successful audio playback dismisses only the audio prompt", async () => {
   let blocked = true;
   const video = { play: () => blocked ? Promise.reject(new Error("blocked")) : Promise.resolve() };

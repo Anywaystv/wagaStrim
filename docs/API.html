@@ -102,6 +102,26 @@ Use OBS for Twitch/Kick output.</p>
 curl http://127.0.0.1:7333/control/stats -H "Authorization: Bearer YOUR_SECRET"</code></pre>
 <p>List returns <code>{"ingests":[...]}</code> with keys and links.
 Stats returns each camera ID's status; <code>live</code> means a publisher is active.</p>
+<dl>
+<dt>bitrateKbps</dt><dd>Incoming audio and video averaged over roughly five seconds.
+Audio keeps this updating when video pauses. It does not confirm that the picture is moving.</dd>
+<dt>late</dt><dd>Video packets received after their scheduled playback time. A late packet is not necessarily discarded.</dd>
+<dt>dropped</dt><dd>Video packets discarded by the relay during recovery. This is a packet count, not a frame count.</dd>
+<dt>packetsLost</dt><dd>Pion's inbound packet-loss estimate, separate from the relay's
+late and dropped counters. RTX recovery can leave recovered packets counted as lost;
+it is not an exact count of unrecovered packets or a measure of visible playback damage.
+The built-in dashboard does not display this field.</dd>
+<dt>playout</dt><dd>Present while a publisher has active media buffers. Contains
+<code>dynamicDelay</code>, normal <code>delayMs</code>, current relay
+<code>currentDelayMs</code>, active <code>catchUpMsPerSecond</code>, and
+<code>jumpPending</code> while waiting for a keyframe. The catch-up rate is the
+delay currently being removed per second, not the saved speed limit. It is zero
+while holding or growing the buffer, after catch-up finishes, or when dynamic
+delay is disabled by its setting or a sync group. These values describe relay
+scheduling, not a viewer's browser playback speed or total viewing latency.</dd>
+</dl>
+<p>Late and dropped counters include relay corrections even when video packets
+stop arriving. Ended tracks keep their totals; a new publisher resets them.</p>
 
 <h2>Reset a stream key</h2>
 <pre><code>curl -X POST http://127.0.0.1:7333/control/ingests/CAMERA_ID/reset-key -H "Authorization: Bearer YOUR_SECRET"</code></pre>

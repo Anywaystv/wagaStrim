@@ -48,11 +48,6 @@ func (s *Session) Bytes() uint64 {
 	return s.bytes.Load()
 }
 
-// add returns the running total without a second atomic read.
-func (s *Session) add(count int) uint64 {
-	return s.bytes.Add(uint64(count)) //nolint:gosec // count comes from a read length and is never negative.
-}
-
 // Server holds the shared WebRTC stack and the live sessions.
 type Server struct {
 	cfg    *config.Config
@@ -113,6 +108,10 @@ func buildAPI(engine *webrtc.SettingEngine, codecs []string, arrival *arrivalFee
 	registry := &interceptor.Registry{}
 	if err := webrtc.ConfigureRTCPReports(registry); err != nil {
 		return nil, fmt.Errorf("%w: rtcp reports: %w", ErrBuildAPI, err)
+	}
+
+	if err := webrtc.ConfigureStatsInterceptor(registry); err != nil {
+		return nil, fmt.Errorf("%w: stats: %w", ErrBuildAPI, err)
 	}
 
 	if err := configureArrivalFeedback(media, registry, arrival); err != nil {
@@ -422,11 +421,13 @@ func (s *Server) drain(
 	target := time.Duration(s.cfg.EffectiveDelay(ing.ID)) * time.Millisecond
 	s.relay.ConfigureDelay(ing.ID, target, s.cfg.DelayOptions(ing.ID))
 	buf := relay.NewBuffer(target, track.Codec().ClockRate, track.Codec().MimeType, askKeyframe)
-	defer buf.Close()
 
 	s.relay.Track(ing.ID, buf)
 	s.mu.Unlock()
-	defer s.relay.Untrack(ing.ID, buf)
+	defer func() {
+		buf.Close()
+		s.relay.Untrack(ing.ID, buf)
+	}()
 	go drainRTCP(receiver, track.SSRC(), buf)
 
 	go relay.Feed(out, buf, func(err error) { s.log.Warnf("ingest %s: forward: %v", ing.Label, err) })
@@ -441,17 +442,21 @@ func (s *Server) drain(
 			return
 		}
 
-		total := session.add(pkt.MarshalSize())
+		session.bytes.Add(uint64(pkt.MarshalSize())) //nolint:gosec // RTP packet sizes are nonnegative.
 		buf.Push(pkt)
 
-		if track.Kind() == webrtc.RTPCodecTypeVideo {
-			late, dropped := buf.Stats()
-			s.mu.Lock()
-			if s.currentLocked(session) {
+		s.mu.Lock()
+		if s.currentLocked(session) {
+			// Read the shared total here so audio and video cannot sample it out of order.
+			total := session.Bytes()
+			if track.Kind() == webrtc.RTPCodecTypeVideo {
+				late, dropped := buf.Stats()
 				s.stats.Observe(ing.ID, total, late, dropped)
+			} else {
+				s.stats.ObserveBytes(ing.ID, total)
 			}
-			s.mu.Unlock()
 		}
+		s.mu.Unlock()
 	}
 }
 

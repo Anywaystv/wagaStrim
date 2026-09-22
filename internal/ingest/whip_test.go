@@ -41,7 +41,7 @@ func newTestServerWithRelay(t *testing.T) (*Server, *config.Ingest, *relay.Relay
 
 	hub := relay.New()
 
-	srv, err := NewServer(cfg, log, engine, hub, stats.New(), func(string) {})
+	srv, err := NewServer(cfg, log, engine, hub, stats.New(hub), func(string) {})
 	require.NoError(t, err)
 	t.Cleanup(srv.Close)
 
