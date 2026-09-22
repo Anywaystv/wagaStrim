@@ -71,7 +71,7 @@ func run(headless bool, log logging.LeveledLogger) error {
 		whep.CloseIngest(id)
 	}
 	retarget := func(id string, delayMS int) {
-		hub.Retarget(id, time.Duration(delayMS)*time.Millisecond)
+		hub.ConfigureDelay(id, time.Duration(delayMS)*time.Millisecond, cfg.DelayOptions(id))
 	}
 
 	srv, err := ui.New(cfg, log, counters, revoke, retarget)
@@ -117,7 +117,7 @@ func run(headless bool, log logging.LeveledLogger) error {
 	// second machine that owns its cameras, so it never opens this port.
 	if controlEnabled {
 		listeners++
-		control := control.New(cfg, log, counters, revoke)
+		control := control.New(cfg, log, counters, revoke, retarget)
 
 		go func() { errs <- control.Serve(ctx) }()
 	}

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>wagaStrim</title>
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/dynamic-delay/web/controls.css">
 <header>
   <span class="wordmark">waga<span>Strim</span></span>
   <span class="header-end">
@@ -128,6 +129,7 @@
       {{if ne .Effective .DelayMS}}
         <p class="muted">Group {{.SyncGroup}} plays at {{.Effective}} ms.</p>
       {{end}}
+      {{template "dynamicdelay" .}}
     </div>
 
     <fieldset class="field codecs" data-codecs="{{.ID}}">
@@ -171,3 +173,4 @@
   </section>
 </main>
 <script src="/static/app.js"></script>
+<script src="/dynamic-delay/web/controls.js"></script>

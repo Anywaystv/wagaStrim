@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Anywaystv/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/dynamicdelay"
 	peerpkg "github.com/Anywaystv/wagaStrim/internal/peer"
 	"github.com/Anywaystv/wagaStrim/internal/relay"
 	"github.com/pion/logging"
@@ -59,6 +60,15 @@ const (
 	maxSubscribers          = 64
 	maxSubscribersPerIngest = 8
 )
+
+// Playback provides one camera's effective policy and shared media clock.
+func (s *Server) Playback(ingestID string) dynamicdelay.Playback {
+	playback := s.relay.Playback(ingestID)
+	playback.Options = s.cfg.DelayOptions(ingestID)
+	playback.DelayMS = s.cfg.EffectiveDelay(ingestID)
+
+	return playback
+}
 
 // NewServer shares the caller's WebRTC stack rather than building a second one.
 func NewServer(cfg *config.Config, log logging.LeveledLogger, api *webrtc.API, hub *relay.Relay) *Server {

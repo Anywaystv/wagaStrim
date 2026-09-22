@@ -23,6 +23,7 @@ import (
 	"github.com/Anywaystv/wagaStrim/docs"
 	"github.com/Anywaystv/wagaStrim/internal/autostart"
 	"github.com/Anywaystv/wagaStrim/internal/config"
+	"github.com/Anywaystv/wagaStrim/internal/dynamicdelay"
 	"github.com/Anywaystv/wagaStrim/internal/ingest"
 	"github.com/Anywaystv/wagaStrim/internal/listen"
 	"github.com/Anywaystv/wagaStrim/internal/reach"
@@ -118,6 +119,9 @@ func New(
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrParseTemplate, err)
 	}
+	if _, parseErr := tpl.ParseFS(dynamicdelay.Assets, "web/controls.html"); parseErr != nil {
+		return nil, fmt.Errorf("%w: %w", ErrParseTemplate, parseErr)
+	}
 
 	srv := &Server{cfg: cfg, log: log, tpl: tpl, counters: counters, revoke: revoke, retarget: retarget}
 	srv.controlAtStart = cfg.Token() != ""
@@ -129,6 +133,8 @@ func New(
 	mux.HandleFunc("POST /api/ingests/remove", srv.handleRemove)
 	mux.HandleFunc("POST /api/ingests/reset-key", srv.handleResetKey)
 	mux.HandleFunc("POST /api/ingests/delay", srv.handleDelay)
+	mux.HandleFunc("POST /api/ingests/dynamic-delay", srv.handleDynamicDelay)
+	mux.Handle("GET /dynamic-delay/", http.StripPrefix("/dynamic-delay/", http.FileServerFS(dynamicdelay.Assets)))
 	mux.HandleFunc("GET /api/stats", srv.handleStats)
 	mux.HandleFunc("POST /api/ingests/group", srv.handleGroup)
 	mux.HandleFunc("POST /api/ingests/label", srv.handleLabel)
@@ -469,6 +475,21 @@ func (s *Server) handleDelay(wri http.ResponseWriter, req *http.Request) {
 			return err
 		}
 
+		s.applyDelay(body.ID)
+
+		return nil
+	})
+}
+
+func (s *Server) handleDynamicDelay(wri http.ResponseWriter, req *http.Request) {
+	mutate(s, wri, req, func(body struct {
+		idBody
+		dynamicdelay.Options
+	},
+	) error {
+		if err := s.cfg.SetDynamicDelay(body.ID, body.Options); err != nil {
+			return err
+		}
 		s.applyDelay(body.ID)
 
 		return nil

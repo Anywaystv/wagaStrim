@@ -6,6 +6,7 @@ package bonded
 import (
 	"net"
 	"sync"
+	"time"
 
 	"github.com/pion/transport/v4"
 )
@@ -41,6 +42,7 @@ type paths struct {
 	conns  []transport.UDPConn
 	mode   routing
 	copies int
+	skew   time.Duration
 }
 
 func (p *paths) add(conn transport.UDPConn) {
@@ -90,6 +92,17 @@ func (p *paths) carriers(seq uint16) []transport.UDPConn {
 	return p.conns[pick : pick+1]
 }
 
+// Only one path is delayed, so packets from the other path overtake it.
+func (p *paths) skewFor(conn transport.UDPConn) time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if conn == p.conns[0] {
+		return p.skew
+	}
+
+	return 0
+}
+
 // sprayNet wraps the real network so every socket ICE opens is registered.
 type sprayNet struct {
 	transport.Net
@@ -130,6 +143,12 @@ func (c *sprayConn) WriteTo(payload []byte, addr net.Addr) (int, error) {
 	sockets := 0
 
 	for _, conn := range c.paths.carriers(seq) {
+		if skew := c.paths.skewFor(conn); skew > 0 {
+			copyOf := append([]byte(nil), payload...)
+			time.AfterFunc(skew, func() { _, _ = conn.WriteTo(copyOf, addr) })
+
+			continue
+		}
 		// A write out of the socket that does not hold the route to this
 		// destination is the case under test, not a failure to report: the
 		// receiver either accepts it as a second path or it never arrives.
