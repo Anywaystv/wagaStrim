@@ -182,3 +182,25 @@ func TestSkippingAdviceFollowsRecentDropsNotTheLifetimeTotal(t *testing.T) {
 	assert.Equal(t, "Packets are arriving after their slot. Raise the delay for this camera.",
 		reg.Of("cam").Advice, "late packets alone must not report a skip that stopped")
 }
+
+func TestAudioSamplesPreserveVideoBufferCounters(t *testing.T) {
+	reg := New()
+	reg.Publishing("cam")
+	reg.Observe("cam", 1000, 3, 2)
+	entry := reg.counters["cam"]
+	entry.samples[0].at = time.Now().Add(-time.Second)
+	moved, skipped := entry.lastMoved, entry.lastSkipped
+	reg.ObserveBytes("cam", 9000)
+	snap := reg.Of("cam")
+	assert.Positive(t, snap.Bitrate)
+	assert.Equal(t, uint64(3), snap.Late)
+	assert.Equal(t, uint64(2), snap.Dropped)
+	assert.Equal(t, moved, entry.lastMoved)
+	assert.Equal(t, skipped, entry.lastSkipped)
+	for range 100 {
+		reg.ObserveBytes("cam", 9000)
+	}
+	assert.Len(t, entry.samples, 2, "audio must share the bitrate sampling limit")
+	reg.ObserveBytes("unknown", 1000)
+	assert.Equal(t, Snapshot{}, reg.Of("unknown"))
+}

@@ -185,30 +185,42 @@ func (r *Registry) Observe(ingestID string, total, late, dropped uint64) {
 		return
 	}
 
-	now := time.Now()
 	entry.late = late
 	entry.dropped = dropped
+	entry.observe(total, time.Now())
+}
 
+// ObserveBytes samples incoming audio without replacing the video buffer counters.
+func (r *Registry) ObserveBytes(ingestID string, total uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if entry, ok := r.counters[ingestID]; ok {
+		entry.observe(total, time.Now())
+	}
+}
+
+func (c *counter) observe(total uint64, now time.Time) {
 	// Sampling every packet buys no accuracy over a five second average and
 	// churns the slice thousands of times a second.
-	if len(entry.samples) > 0 && now.Sub(entry.samples[len(entry.samples)-1].at) < sampleEvery {
+	if len(c.samples) > 0 && now.Sub(c.samples[len(c.samples)-1].at) < sampleEvery {
 		return
 	}
 
-	if bad := late + dropped; bad > entry.prevBad {
-		entry.prevBad = bad
-		entry.lastMoved = now
+	if bad := c.late + c.dropped; bad > c.prevBad {
+		c.prevBad = bad
+		c.lastMoved = now
 	}
 
-	if dropped > entry.prevSkipped {
-		entry.prevSkipped = dropped
-		entry.lastSkipped = now
+	if c.dropped > c.prevSkipped {
+		c.prevSkipped = c.dropped
+		c.lastSkipped = now
 	}
-	entry.samples = append(entry.samples, sample{at: now, bytes: total})
+	c.samples = append(c.samples, sample{at: now, bytes: total})
 
 	cutoff := now.Add(-window)
-	for len(entry.samples) > 1 && entry.samples[0].at.Before(cutoff) {
-		entry.samples = entry.samples[1:]
+	for len(c.samples) > 1 && c.samples[0].at.Before(cutoff) {
+		c.samples = c.samples[1:]
 	}
 }
 
